@@ -8,7 +8,7 @@ from styles import CUSTOM_CSS
 from datetime import datetime, timezone, timedelta, time
 import pytz
 from data_transformation import load_issues, upsert_jira_data, load_issues_Amparex
-from plotting import apply_font
+from plotting import apply_font, create_toggle_chart, generate_distinct_colors
 from st_aggrid import AgGrid, GridOptionsBuilder
 import pygwalker as pg
 from pygwalker.api.streamlit import StreamlitRenderer, init_streamlit_comm
@@ -55,7 +55,7 @@ st.sidebar.image("data/evex_logo.png", width=200)
 st.sidebar.header("\n\nJIRA Data Analysis")
 
 # Require password before showing any data/controls (set UI_PASSWORD to enable).
-require_password()
+#require_password()
 
 st.sidebar.subheader("Data Controls")
 # add horizontal radio buttons to toggle between Ipro, Amparex and both
@@ -64,6 +64,9 @@ firma = st.sidebar.radio("Firma", ["Ipro", "Amparex", "Beide"], horizontal=True)
 try:
     df_old = load_data()
     df = df_old.copy()
+    # make sure column clone_in_project is there
+    if 'clone_in_project' not in df.columns:
+        df['clone_in_project'] = '-'
 except:
     df = pd.DataFrame()
     df_old = pd.DataFrame()
@@ -90,8 +93,8 @@ st.sidebar.write("JIRA Daten aktualisieren.")
 
 if st.sidebar.button("🔄 aktualisieren"):
     st.sidebar.success("Fetch triggered!")
-    issues_ipro = fetch_jira_issues(start_dt, end_dt, max_issues=10000, project="SDIPR")
-    issues_amparex = fetch_jira_issues(start_dt, end_dt, max_issues=10000, project="SDAX")
+    issues_ipro = fetch_jira_issues(start_dt, end_dt, max_issues=100000, project="SDIPR")
+    issues_amparex = fetch_jira_issues(start_dt, end_dt, max_issues=100000, project="SDAX")
     if issues_ipro is None or issues_amparex is None:
         st.sidebar.warning("No JIRA data found — please refresh using sidebar.")
         st.stop()
@@ -101,6 +104,14 @@ if st.sidebar.button("🔄 aktualisieren"):
     df_new_amparex = load_issues_Amparex(issues_amparex)
     # st.sidebar.success(f"Data transformed successfully! New {len(df_new_ipro)} tickets loaded for Ipro and {len(df_new_amparex)} tickets loaded for Amparex.")
     df_combined = pd.concat([df_new_ipro, df_new_amparex])
+    columns_new = df_combined.columns
+    columns_old = df_old.columns
+    columns_to_add = set(columns_new) - set(columns_old)
+    for column in columns_to_add:
+        df_old[column] = ''
+    for column in columns_old:
+        if column not in columns_new:
+            df_combined[column] = ''
     df = upsert_jira_data(df_old, df_combined)
     save_data(df)
     st.sidebar.success(f"Data upserted successfully! Overall {len(df)} tickets loaded.")
@@ -126,7 +137,7 @@ df_raw = df.copy()
 plot_height = 900
 plot_width = 1500
 # Tabs
-tab_overview, tab_categories, tab_subcategories, tab_sources, tab_status, tab_cycle_time, tab_resolution_time, tab_customer_tickets, tab_raw, tab_interactive = st.tabs([
+tab_overview, tab_categories, tab_subcategories, tab_sources, tab_status, tab_cycle_time, tab_resolution_time, tab_customer_tickets, tab_clones, tab_raw, tab_interactive = st.tabs([
     "📊 Überblick",
     "📊 Kategorien",
     "📊 Unterkategorien",
@@ -135,6 +146,7 @@ tab_overview, tab_categories, tab_subcategories, tab_sources, tab_status, tab_cy
     "⏱️ Ticketbearbeitungszeit",
     "📈 Erstlösequote",
     "📚 Tickets pro Kunde",
+    "📊 Clone Tickets",
     "📄 Rohdaten",
     "📄 Interaktiv"
 ])
@@ -202,7 +214,8 @@ with tab_overview:
     fig.update_yaxes(title_text=y_title, tickformat=y_format)
     fig = apply_font(fig)
 
-    st.plotly_chart(fig, use_container_width=False, height=plot_height, width=plot_width)
+    st.plotly_chart(fig, height=plot_height, width=plot_width)
+
 
 # -------------------------------
 # Tab 2 – Categories Breakdown
@@ -290,21 +303,27 @@ with tab_categories:
     # Final Layout Updates
     fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
     
-    st.plotly_chart(fig, use_container_width=False, height=plot_height, width=plot_width)
+    st.plotly_chart(fig, height=plot_height, width=plot_width)
 
 # -------------------------------
 # Tab 3 – Categories Breakdown
 # -------------------------------
 with tab_subcategories:
     st.header("📊 Aufteilung Unterkategorien")
+    subcategories = df["Unterkategorie"].unique()
+    palette = generate_distinct_colors(len(subcategories))
+
+    color_map = dict(zip(subcategories, palette))
+
     result = df[['Hauptkategorie','Unterkategorie','key']].groupby(['Hauptkategorie','Unterkategorie']).count().reset_index()
     result = result.rename(columns={'key': 'Anzahl'})
     # sort by overall count
     result = result.sort_values('Anzahl', ascending=False)
 
-    fig = px.bar(result, x='Hauptkategorie', y='Anzahl', color='Unterkategorie')
+    fig = px.bar(result, x='Hauptkategorie', y='Anzahl', 
+                color='Unterkategorie',color_discrete_map=color_map)
     fig = apply_font(fig)
-    st.plotly_chart(fig, use_container_width=False, height=plot_height, width=plot_width)
+    st.plotly_chart(fig, height=plot_height, width=plot_width)
 
 
 # -------------------------------
@@ -398,7 +417,7 @@ with tab_sources:
     fig.update_xaxes(title_text=x_axis_label)
     fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
     
-    st.plotly_chart(fig, use_container_width=False, height=plot_height, width=plot_width)
+    st.plotly_chart(fig,  height=plot_height, width=plot_width)
 
 # -------------------------------
 # Tab 4 – Status Breakdown
@@ -422,7 +441,7 @@ with tab_status:
     # set fontsize of plot to 24
     fig = apply_font(fig)
 
-    st.plotly_chart(fig, use_container_width=False, height=plot_height, width=plot_width)
+    st.plotly_chart(fig,  height=plot_height, width=plot_width)
     
 
 # -------------------------------
@@ -446,21 +465,25 @@ with tab_cycle_time:
     # set width of plot
     fig.update_layout(width=1000)
     fig = apply_font(fig)
-    st.plotly_chart(fig, use_container_width=False, height=plot_height, width=plot_width)
+    st.plotly_chart(fig, height=plot_height, width=plot_width)
 
 # -------------------------------
 # Tab 6 – Resolution Time
 # -------------------------------
 with tab_resolution_time:
     st.header("📈 Erstlösequote")
-    result = df[df['status_category']=='Fertig'][[x_axis,'resolution','key']].groupby([x_axis,'resolution']).count().reset_index()
-    result = result.rename(columns={'key': 'Anzahl'})
-    fig = px.bar(result, x=x_axis, y='Anzahl', text='Anzahl', color='resolution')
-    fig.update_xaxes(title_text=x_axis_label)
-    fig.update_yaxes(title_text='Anzahl Fertige Tickets')
-    fig = apply_font(fig)
-    st.plotly_chart(fig, use_container_width=False, height=plot_height, width=plot_width)
-
+    create_toggle_chart(
+        df=df,
+        x_col=x_axis,
+        group_col='resolution',
+        count_col='key', # renamed internally later
+        toggle_key="toggle_resolution_time",
+        color_map={"Same day": "green", "> 1 day": "#FFD700"},
+        force_bottom_value="Same day",
+        sort_x_by_total=True, # Sorts bars from tallest to shortest
+        plot_height=plot_height,
+        plot_width=plot_width
+    )
 
 # -------------------------------
 # Tab 7 – Customer Tickets
@@ -473,10 +496,35 @@ with tab_customer_tickets:
     result = result.head(25)
     fig = px.bar(result, x='zentrale', y='Anzahl', text='Anzahl')
     fig = apply_font(fig)
-    st.plotly_chart(fig, use_container_width=False, height=plot_height, width=plot_width)
+    st.plotly_chart(fig,  height=plot_height, width=plot_width)
 
 # -------------------------------
-# Tab 8 – Raw Data
+# Tab 8 – Clone Tickets
+# -------------------------------
+with tab_clones:
+    st.header("📊 Clone Tickets")
+    result = df[['clone_in_project','key']].groupby(['clone_in_project']).count().reset_index()
+    result = result.rename(columns={'key': 'Anzahl'})
+    result = result.sort_values('Anzahl', ascending=False)
+    fig = px.bar(result, x='clone_in_project', y='Anzahl', text='Anzahl')
+    fig = apply_font(fig)
+    st.plotly_chart(fig, height=plot_height, width=plot_width)
+
+    # plot clones by project per week
+    result = df[['clone_in_project','key',x_axis]].groupby(['clone_in_project',x_axis]).count().reset_index()
+    result = result.rename(columns={'key': 'Anzahl'})
+    fig = px.bar(result, x=x_axis, y='Anzahl', color='clone_in_project', text='Anzahl')
+    # add labels inside of bars
+    fig.update_traces(
+        textposition='inside',
+        insidetextanchor='middle'
+    )
+    fig = apply_font(fig)
+    st.plotly_chart(fig, height=plot_height, width=plot_width)
+
+
+# -------------------------------
+# Tab 9 – Raw Data
 # -------------------------------
 with tab_raw:
     df = df[['Link', *[col for col in df.columns if col != 'Link']]]
@@ -495,7 +543,7 @@ with tab_raw:
 
 
 # -------------------------------
-# Tab 9 – Interactive Data
+# Tab 10 – Interactive Data
 # -------------------------------
 with tab_interactive:
     st.header("📄 Interaktiv")

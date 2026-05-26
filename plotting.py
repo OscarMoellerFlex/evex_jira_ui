@@ -1,5 +1,141 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import pandas as pd
+import colorsys
+import numpy as np
+
+def generate_distinct_colors(n):
+    # evenly spaced hues in HSV space
+    hues = np.linspace(0, 1, n, endpoint=False)
+    colors = []
+    for h in hues:
+        r, g, b = colorsys.hsv_to_rgb(h, 0.65, 0.9)
+        colors.append(f"rgb({int(r*255)},{int(g*255)},{int(b*255)})")
+    return colors
+
+def create_toggle_chart(
+    df, 
+    x_col, 
+    group_col, 
+    count_col='key', 
+    x_label=None, 
+    toggle_key="default_key", 
+    color_map=None, 
+    force_bottom_value=None,
+    sort_x_by_total=False,
+    plot_height=400,
+    plot_width=None
+):
+    """
+    Generates a stacked bar chart with:
+    - Toggle between Absolute/Relative view
+    - Percentages inside bars
+    - Totals on top of bars
+    - Custom ordering and coloring
+    """
+    
+    # 1. Data Preparation
+    # Group and count
+    result = df[[x_col, group_col, count_col]].groupby([x_col, group_col]).count().reset_index()
+    
+    # Calculate Totals & Percentages per stack
+    total_per_group = result.groupby(x_col)[count_col].transform('sum')
+    result['percentage'] = result[count_col] / total_per_group
+    
+    # Custom Labels: "Count <br> (Percent)"
+    result['custom_label'] = result.apply(
+        lambda x: f"{x[count_col]}<br>({x['percentage']:.0%})", axis=1
+    )
+    
+    # 2. Ordering Logic
+    # Group Order (Stack Order)
+    group_order = result[group_col].unique().tolist()
+    if force_bottom_value and force_bottom_value in group_order:
+        group_order.remove(force_bottom_value)
+        group_order.insert(0, force_bottom_value) # Insert at 0 to put at bottom
+        
+    # X-Axis Order
+    if sort_x_by_total:
+        # Sort X-axis based on total count descending
+        total_counts_index = result.groupby(x_col)[count_col].sum().sort_values(ascending=False).index
+    else:
+        total_counts_index = None # Use default or existing order
+
+    # 3. Calculate Column Totals (for the label on top)
+    column_totals = result.groupby(x_col)[count_col].sum().reset_index()
+
+    # 4. Streamlit Toggle
+    mode = st.radio(
+        "Ansicht wählen:",
+        ["Absolute Zahlen", "Relativ (%)"],
+        horizontal=True,
+        index=0,
+        key=toggle_key
+    )
+
+    # 5. Configure Variables based on Toggle
+    if mode == "Absolute Zahlen":
+        y_val = count_col
+        y_title = 'Anzahl Tickets'
+        y_format = None
+        # Labels for top of bars
+        y_text_pos = column_totals[count_col]
+        text_content = column_totals[count_col].astype(str)
+        # Add 15% buffer
+        y_max = column_totals[count_col].max() * 1.15
+    else:
+        y_val = 'percentage'
+        y_title = 'Prozentualer Anteil'
+        y_format = '.0%'
+        # Labels for top (100%)
+        y_text_pos = [1] * len(column_totals)
+        text_content = column_totals[count_col].apply(lambda x: f"Total: {x}")
+        y_max = 1.15
+
+    # 6. Plot Base Chart
+    fig = px.bar(
+        result, 
+        x=x_col, 
+        y=y_val, 
+        color=group_col,
+        text='custom_label',
+        color_discrete_map=color_map,
+        category_orders={
+            group_col: group_order,
+            x_col: total_counts_index
+        }
+    )
+
+    # 7. Styling (Must happen BEFORE adding Scatter trace)
+    fig.update_traces(textposition='inside', insidetextanchor='middle')
+    
+    # Assuming apply_font is available globally
+    try:
+        fig = apply_font(fig)
+    except NameError:
+        pass # Skip if function not found
+
+    # 8. Add Totals on Top (Scatter Trace)
+    fig.add_trace(
+        go.Scatter(
+            x=column_totals[x_col],
+            y=y_text_pos,
+            text=text_content,
+            mode='text',
+            textposition='top center',
+            textfont=dict(size=12, color='black', weight='bold'),
+            showlegend=False,
+            hoverinfo='skip'
+        )
+    )
+
+    # 9. Final Layout
+    fig.update_xaxes(title_text=x_label if x_label else x_col)
+    fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
+    
+    st.plotly_chart(fig, height=plot_height, width=plot_width)
 
 
 def apply_font(fig, base=20):

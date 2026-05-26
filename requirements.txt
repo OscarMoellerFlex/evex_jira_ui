@@ -13,4 +13,7 @@ streamlit-aggrid==1.2.1
 pygwalker>=0.4.9
 pyarrow==22.0.0
 
+# Holidays
+holidays==0.24.1
+
 

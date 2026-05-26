@@ -10,6 +10,7 @@ load_dotenv(override=True)
 JIRA_URL = os.getenv("JIRA_URL")
 JIRA_USERNAME = os.getenv("JIRA_USERNAME")
 JIRA_PASSWORD = os.getenv("JIRA_PASSWORD")
+print(JIRA_USERNAME, JIRA_PASSWORD)
 
 jira = JIRA(
     server=JIRA_URL,
