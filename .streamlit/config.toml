@@ -1,7 +1,7 @@
 [theme]
 base = "dark"
-primaryColor = "#258F26"                 # Your green (used for widgets, highlights)
-backgroundColor = "#FFFFFF"              # Clean white background
-secondaryBackgroundColor = "#F4F6FA"     # Very light grey card background
-textColor = "#1C1C1C"                    # Neutral dark
+primaryColor = "#258F26"             # Your green (used for widgets, highlights)
+backgroundColor = "#FFFFFF"          # Clean white background
+secondaryBackgroundColor = "#F4F6FA" # Very light grey card background
+textColor = "#1C1C1C"                # Neutral dark
 font = "sans serif"
