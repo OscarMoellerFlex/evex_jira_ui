@@ -1,0 +1,17 @@
+# Data cache and generated exports are not committed, but two files under
+# data/ are required at runtime and must stay tracked:
+#   evex_logo.png          -> app.py sidebar
+#   object_id_to_name.json -> imported by data_transformation.py at module load
+data/*
+!data/evex_logo.png
+!data/object_id_to_name.json
+.env
+__pycache__/*
+**/__pycache__/
+**/.DS_Store
+.playwright-mcp/*
+# local tooling config
+.claude/
+# NOTE: .trunk/ is intentionally NOT ignored - .trunk/trunk.yaml and
+# .trunk/configs/ are shared with the team. .trunk/.gitignore already
+# excludes the generated parts (out, logs, tools, plugins, user_*.yaml).

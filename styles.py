@@ -61,4 +61,3 @@ CUSTOM_CSS = """
     }
     </style>
     """
-
