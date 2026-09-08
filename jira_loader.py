@@ -1,5 +1,8 @@
 import json
 import os
+from functools import lru_cache
+
+import requests
 from dotenv import load_dotenv
 from jira import JIRA
 
@@ -142,8 +145,8 @@ def dedupe_issues(issues, key_field="key"):
 
 
 def fetch_jira_issues(
-    start_dt,
-    end_dt,
+    start_dt=None,
+    end_dt=None,
     max_issues=1000,
     project="SDIPR",
     save_path="data/jira_issues.json",
@@ -156,7 +159,10 @@ def fetch_jira_issues(
     start_str = start_dt.strftime("%Y-%m-%d %H:%M")
     end_str = end_dt.strftime("%Y-%m-%d %H:%M")
     all_issues = []
-    jql = f"project = {project} AND created >= '{start_str}' AND created <= '{end_str}' ORDER BY created DESC"
+    if start_dt is not None and end_dt is not None:
+        jql = f"project = {project} AND created >= '{start_str}' AND created <= '{end_str}' ORDER BY created DESC"
+    else:
+        jql = f"project = {project} ORDER BY created DESC"
     next_token = None
     counter = 0
     b_max_results = 100
