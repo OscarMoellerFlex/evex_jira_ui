@@ -40,7 +40,7 @@ def jira_request(url, params=None, timeout=30):
     return response.json()
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=None)
 def fetch_asset_object(
     cloud_id: str = CLOUD_ID, workspace_id: str = WORKSPACE_ID, object_id: str = None
 ):
@@ -147,6 +147,7 @@ def fetch_jira_issues(
     max_issues=1000,
     project="SDIPR",
     save_path="data/jira_issues.json",
+    progress_cb=None,
 ):
 
     jira = JIRA(
@@ -198,6 +199,8 @@ def fetch_jira_issues(
                             f"Failed to fetch asset {workspace_id}:{object_id}: {exc}"
                         )
         all_issues.extend(page.get("issues", []))
+        if progress_cb:
+            progress_cb(len(all_issues))
 
         next_token = page.get("nextPageToken")
 

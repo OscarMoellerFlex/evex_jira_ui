@@ -343,7 +343,7 @@ with tab_subcategories:
     subcategories = df["Unterkategorie"].unique()
     palette = generate_distinct_colors(len(subcategories))
 
-    color_map = dict(zip(subcategories, palette))
+    color_map = dict(zip(subcategories, palette, strict=False))
 
     result = (
         df[["Hauptkategorie", "Unterkategorie", "key"]]
@@ -608,7 +608,7 @@ with tab_interactive:
     problem_cols = [
         col
         for col in df.columns
-        if df[col].apply(lambda x: isinstance(x, (list, dict, set))).any()
+        if any(isinstance(x, (list, dict, set)) for x in df[col])
     ]
     df = df.drop(columns=problem_cols)
     # display dataframe with pygwalker
