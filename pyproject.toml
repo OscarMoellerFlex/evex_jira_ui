@@ -12,11 +12,16 @@ dependencies = [
   "numpy>=2.4.6",
   "openai>=2.38.0",
   "openpyxl>=3.1.5",
-  "pandas>=3.0.3",
+  "pandas>=2.3.3,<3",
   "plotly>=6.7.0",
   "pyarrow>=24.0.0",
   "pygwalker>=0.5.0.1",
   "python-dotenv>=1.2.2",
   "pytz>=2026.2",
-  "streamlit>=1.60.0",
+  # pygwalker 0.5.0.1 (the latest release) imports
+  # streamlit.web.server.server_util.make_url_path_regex, which is gone in streamlit 1.60
+  # (verified) and breaks `import app`. 1.52.1 works and matches requirements.runtime.txt.
+  # The <1.53 ceiling is conservative; the exact removal version was not pinned down.
+  "streamlit>=1.52.1,<1.53",
+  "streamlit-aggrid>=1.2.1",
 ]
