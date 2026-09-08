@@ -1,7 +1,4 @@
 import os
-
-# bandit B403: pickle is only used for this app's own local cache file, never
-# for data received from elsewhere. See load_data() below.
 import pickle  # nosec B403
 
 DATA_PATH = "data/jira_data.pkl"
