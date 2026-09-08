@@ -19,9 +19,13 @@ dependencies = [
   "python-dotenv>=1.2.2",
   "pytz>=2026.2",
   # pygwalker 0.5.0.1 (the latest release) imports
-  # streamlit.web.server.server_util.make_url_path_regex, which is gone in streamlit 1.60
-  # (verified) and breaks `import app`. 1.52.1 works and matches requirements.runtime.txt.
-  # The <1.53 ceiling is conservative; the exact removal version was not pinned down.
-  "streamlit>=1.52.1,<1.53",
+  # streamlit.web.server.server_util.make_url_path_regex. That symbol was removed in
+  # streamlit 1.57.0 - verified by inspecting the wheels of 1.53.1 through 1.60.0 - so
+  # 1.56.x is the last release the Interaktiv tab works on (verified by installing
+  # streamlit 1.56.0 + pygwalker 0.5.0.1 and importing pygwalker.api.streamlit).
+  # The >=1.54.0 floor is required: it patches SSRF advisory GHSA-7p48-42j8-8846 and
+  # cache-collision advisory GHSA-vqwp-45wm-r9r5, both of which affect 1.52.x.
+  # Raise the ceiling only once pygwalker stops importing make_url_path_regex.
+  "streamlit>=1.54.0,<1.57",
   "streamlit-aggrid>=1.2.1",
 ]
