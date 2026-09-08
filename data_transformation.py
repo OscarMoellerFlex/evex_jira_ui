@@ -23,6 +23,7 @@ if not (JIRA_PASSWORD or "").strip():
     )
 
 jira = JIRA(server=JIRA_URL, basic_auth=(JIRA_USERNAME, JIRA_PASSWORD))
+# jira = JIRA(server=JIRA_URL, token_auth=JIRA_API_KEY)
 # read json from data/jira-servicedesk-schema-objects.json
 # with open('data/jira-servicedesk-schema-objects.json', 'r') as f:
 #    schema = json.load(f)

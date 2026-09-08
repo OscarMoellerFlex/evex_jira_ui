@@ -1,8 +1,10 @@
+
 ---
 # This file controls the behavior of Trunk:
 # https://docs.trunk.io/cli
 # To learn more about the format of this file,
 # see https://docs.trunk.io/reference/trunk-yaml
+
 version: 0.1
 cli:
   version: 1.25.0
@@ -35,7 +37,7 @@ lint:
     - osv-scanner@2.5.1
     - oxipng@10.2.1
     - prettier@3.9.6
-    # - ruff@0.16.6
+    - ruff@0.16.6
     - taplo@0.10.0
     - trufflehog@3.97.4
 actions:
