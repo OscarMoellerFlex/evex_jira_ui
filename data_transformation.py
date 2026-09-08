@@ -12,7 +12,16 @@ load_dotenv(override=True)
 
 JIRA_URL = os.getenv("JIRA_URL")
 JIRA_USERNAME = os.getenv("JIRA_USERNAME")
-JIRA_PASSWORD = os.getenv("JIRA_API_KEY")
+JIRA_PASSWORD = os.getenv("JIRA_PASSWORD")
+
+# Fail fast on a missing token. Jira answers an unauthenticated search with
+# HTTP 401 *and an empty result page* rather than an error, so without this the
+# app silently fetches 0 issues and only blows up later in the transform step.
+if not (JIRA_PASSWORD or "").strip():
+    raise RuntimeError(
+        "JIRA_PASSWORD is not set. Add it to .env before starting the app."
+    )
+
 jira = JIRA(server=JIRA_URL, basic_auth=(JIRA_USERNAME, JIRA_PASSWORD))
 # jira = JIRA(server=JIRA_URL, token_auth=JIRA_API_KEY)
 # read json from data/jira-servicedesk-schema-objects.json
@@ -91,8 +100,14 @@ def enrich_jira_time_metrics(
             year_series.append(out[c])
     years_stack = pd.concat(year_series, axis=0)
 
-    min_year = int(years_stack.dt.year.min())
-    max_year = int(years_stack.dt.year.max())
+    # With no rows (or no parseable dates) .min()/.max() are NaN, and int(NaN)
+    # raises "cannot convert float NaN to integer". Fall back to the current year.
+    years = years_stack.dt.year.dropna()
+    if years.empty:
+        min_year = max_year = pd.Timestamp.today().year
+    else:
+        min_year = int(years.min())
+        max_year = int(years.max())
     de = holidays.Germany(years=range(min_year, max_year + 1), subdiv=subdiv)
 
     holiday_set = set(de.keys())  # datetime.date for biz-hour logic
@@ -412,7 +427,9 @@ def load_issues(issues):
         lambda x: ",".join([y.split("-")[0] for y in x.split(",")]) if x else "-"
     )
     df["has_exax_clone"] = df["clone_in_project"].str.contains("EXIPR")
-    df["has_axt_clone_clone"] = ""
+    # Must be bool (not "") - load_issues_Amparex sets a bool, and concatenating
+    # the two frames otherwise yields a mixed object column that Arrow rejects.
+    df["has_axt_clone_clone"] = False
 
     # move firma column to the front
     df = df[["firma", *[col for col in df.columns if col != "firma"]]]
@@ -582,7 +599,9 @@ def load_issues_Amparex(issues):
         lambda x: ",".join([y.split("-")[0] for y in x.split(",")]) if x else "-"
     )
     df["has_exax_clone"] = df["clone_in_project"].str.contains("EXAX")
-    df["has_axt_clone_clone"] = df["clones_of_clones"].str.contains("AX")
+    df["has_axt_clone_clone"] = (
+        df["clones_of_clones"].str.contains("AX").fillna(False).astype(bool)
+    )
     df = df[["firma", *[col for col in df.columns if col != "firma"]]]
 
     return df

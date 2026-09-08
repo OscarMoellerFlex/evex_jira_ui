@@ -69,16 +69,27 @@ try:
     # make sure column clone_in_project is there
     if "clone_in_project" not in df.columns:
         df["clone_in_project"] = "-"
-except:
+except Exception:
     df = pd.DataFrame()
     df_old = pd.DataFrame()
 
 # Optional global filters in sidebar
 start_date = datetime.now(timezone.utc) - timedelta(days=7)
 end_date = datetime.now(timezone.utc)
-start_date, end_date = st.sidebar.date_input(
-    "Zeitraum (erstellt)", value=(start_date, end_date)
-)
+picked = st.sidebar.date_input("Zeitraum (erstellt)", value=(start_date, end_date))
+
+# While a range is being picked, Streamlit reruns after the FIRST click and
+# returns a 1-tuple; unpacking that straight into two names raised
+# "not enough values to unpack". Keep the last complete range until the
+# second date is chosen, so the charts stay put instead of erroring.
+if len(picked) == 2:
+    start_date, end_date = picked
+    st.session_state["date_range"] = (start_date, end_date)
+else:
+    start_date, end_date = st.session_state.get(
+        "date_range", (start_date.date(), end_date.date())
+    )
+    st.sidebar.info("Bitte Enddatum wählen.")
 
 tz = pytz.UTC
 
@@ -103,8 +114,14 @@ if st.sidebar.button("🔄 aktualisieren"):
     issues_amparex = fetch_jira_issues(
         start_dt, end_dt, max_issues=100000, project="SDAX"
     )
-    if issues_ipro is None or issues_amparex is None:
-        st.sidebar.warning("No JIRA data found — please refresh using sidebar.")
+    if not issues_ipro and not issues_amparex:
+        # An empty result is usually a silent auth failure (Jira answers 401 with
+        # an empty page) or a window with no tickets - not a reason to crash in
+        # the transformation step.
+        st.sidebar.error(
+            f"Keine Tickets im Zeitraum {start_dt:%Y-%m-%d} bis {end_dt:%Y-%m-%d} "
+            "gefunden. Bitte Zeitraum prüfen und JIRA_PASSWORD in .env verifizieren."
+        )
         st.stop()
     else:
         st.sidebar.success(
@@ -151,6 +168,7 @@ plot_width = 1500
     tab_categories,
     tab_subcategories,
     tab_sources,
+    tab_ursprung,
     tab_status,
     tab_cycle_time,
     tab_resolution_time,
@@ -164,6 +182,7 @@ plot_width = 1500
         "📊 Kategorien",
         "📊 Unterkategorien",
         "📊 Quellen",
+        "📊 Ursprung",
         "📊 Offene Tickets nach Status",
         "⏱️ Ticketbearbeitungszeit",
         "📈 Erstlösequote",
@@ -332,6 +351,7 @@ with tab_categories:
 
     # Final Layout Updates
     fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
+    fig.update_layout(legend_title_text="")
 
     st.plotly_chart(fig, height=plot_height, width=plot_width)
 
@@ -371,7 +391,7 @@ with tab_subcategories:
 # -------------------------------
 
 with tab_sources:
-    st.header("📊 Aufteilung Quellen")
+    st.header("📊 Aufteilung Quellen (Anfragetyp)")
 
     # 1. Prepare Data
     # Filter out empty request types and group
@@ -452,8 +472,38 @@ with tab_sources:
     # 7. Final Layout Updates
     fig.update_xaxes(title_text=x_axis_label)
     fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
+    # Hide the 'request_type' legend title (see create_toggle_chart).
+    fig.update_layout(legend_title_text="")
 
     st.plotly_chart(fig, height=plot_height, width=plot_width)
+
+# -------------------------------
+# Tab 3b – Ursprung Ticket Breakdown (customfield_10675)
+# -------------------------------
+
+with tab_ursprung:
+    st.header("📊 Aufteilung Ursprung Ticket")
+
+    # 'source' is populated from customfield_10675 ("Ursprung Ticket") in data_transformation.py
+    # Rename it so the legend reads "Ursprung" instead of the internal column name.
+    df_ursprung = df[df["source"].fillna("") != ""].rename(
+        columns={"source": "Ursprung Ticket"}
+    )
+
+    if df_ursprung.empty:
+        st.info("Keine Tickets mit gesetztem 'Ursprung Ticket' im gewählten Zeitraum.")
+    else:
+        create_toggle_chart(
+            df=df_ursprung,
+            x_col=x_axis,
+            group_col="Ursprung Ticket",
+            count_col="key",
+            x_label=x_axis_label,
+            toggle_key="toggle_ursprung",
+            plot_height=plot_height,
+            plot_width=plot_width,
+        )
+
 
 # -------------------------------
 # Tab 4 – Status Breakdown
@@ -578,6 +628,7 @@ with tab_clones:
     # add labels inside of bars
     fig.update_traces(textposition="inside", insidetextanchor="middle")
     fig = apply_font(fig)
+    fig.update_layout(legend_title_text="")
     st.plotly_chart(fig, height=plot_height, width=plot_width)
 
 
@@ -605,20 +656,33 @@ with tab_raw:
 # -------------------------------
 with tab_interactive:
     st.header("📄 Interaktiv")
-    problem_cols = [
-        col
-        for col in df.columns
-        if any(isinstance(x, (list, dict, set)) for x in df[col])
-    ]
-    df = df.drop(columns=problem_cols)
-    # display dataframe with pygwalker
-    renderer = StreamlitRenderer(df)
-    renderer.explorer()
+    # pygwalker's StreamlitRenderer divides by the sample length, so an empty
+    # frame raises ZeroDivisionError. Bail out early instead.
+    if df.empty:
+        st.info("Keine Daten im gewählten Zeitraum.")
+    else:
+        # NOTE: use a plain generator instead of Series.apply(...).any().
+        # On an empty frame, .apply() preserves the 'category' dtype of columns
+        # like time_to_resolution_bin, and Categorical has no 'any' reduction.
+        problem_cols = [
+            col
+            for col in df.columns
+            if any(isinstance(x, (list, dict, set)) for x in df[col])
+        ]
+        df_interactive = df.drop(columns=problem_cols)
+        # display dataframe with pygwalker
+        renderer = StreamlitRenderer(df_interactive)
+        renderer.explorer()
 
-    st.write("\n\n\n\n\n\n")
+        st.write("\n\n\n\n\n\n")
 
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_default_column(filter=True, sortable=True)
-    grid_options = gb.build()
+        gb = GridOptionsBuilder.from_dataframe(df_interactive)
+        gb.configure_default_column(filter=True, sortable=True)
+        grid_options = gb.build()
 
-    AgGrid(df, gridOptions=grid_options, height=plot_height, width=plot_width)
+        AgGrid(
+            df_interactive,
+            gridOptions=grid_options,
+            height=plot_height,
+            width=plot_width,
+        )

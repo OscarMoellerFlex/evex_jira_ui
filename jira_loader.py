@@ -1,8 +1,5 @@
 import json
 import os
-from functools import lru_cache
-
-import requests
 from dotenv import load_dotenv
 from jira import JIRA
 
@@ -11,14 +8,17 @@ load_dotenv(override=True)
 
 JIRA_URL = os.getenv("JIRA_URL")
 JIRA_USERNAME = os.getenv("JIRA_USERNAME")
-# JIRA_PASSWORD = os.getenv("JIRA_PASSWORD")
-JIRA_PASSWORD = os.getenv("JIRA_API_KEY")
+JIRA_PASSWORD = os.getenv("JIRA_PASSWORD")
 
+# Fail fast on a missing token. Jira answers an unauthenticated search with
+# HTTP 401 *and an empty result page* rather than an error, so without this the
+# app silently fetches 0 issues and only blows up later in the transform step.
+if not (JIRA_PASSWORD or "").strip():
+    raise RuntimeError(
+        "JIRA_PASSWORD is not set. Add it to .env before starting the app."
+    )
 
-jira = JIRA(
-    server=JIRA_URL,
-    basic_auth=(JIRA_USERNAME, JIRA_PASSWORD),
-)
+jira = JIRA(server=JIRA_URL, basic_auth=(JIRA_USERNAME, JIRA_PASSWORD))
 
 CLOUD_ID = "242cf880-c51a-4277-9381-781d5ae181df"
 SANDBOX_CLOUD_ID = "8a3828c5-f874-43ce-9367-3d9b73c02832"
@@ -149,11 +149,9 @@ def fetch_jira_issues(
     save_path="data/jira_issues.json",
     progress_cb=None,
 ):
-
     jira = JIRA(
         server=JIRA_URL,
         basic_auth=(JIRA_USERNAME, JIRA_PASSWORD),
-        # token_auth=JIRA_API_KEY
     )
     start_str = start_dt.strftime("%Y-%m-%d %H:%M")
     end_str = end_dt.strftime("%Y-%m-%d %H:%M")
@@ -240,13 +238,14 @@ def parse_clone_links(issue):
         return result
 
     for link in links:
-        try:
-            result["clones"].append(link["outwardIssue"]["key"])
-        except Exception:
-            pass
-        try:
-            result["cloned_by"].append(link["inwardIssue"]["key"])
-        except Exception:
-            pass
+        # A link carries an outwardIssue, an inwardIssue, or neither - probe
+        # with .get() instead of swallowing KeyError with a bare except/pass.
+        outward = link.get("outwardIssue") or {}
+        if "key" in outward:
+            result["clones"].append(outward["key"])
+
+        inward = link.get("inwardIssue") or {}
+        if "key" in inward:
+            result["cloned_by"].append(inward["key"])
 
     return result

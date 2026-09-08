@@ -139,6 +139,9 @@ def create_toggle_chart(
     # 9. Final Layout
     fig.update_xaxes(title_text=x_label if x_label else x_col)
     fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
+    # Plotly titles the legend with the color column's name; the swatches are
+    # self-explanatory, so drop it.
+    fig.update_layout(legend_title_text="")
 
     st.plotly_chart(fig, height=plot_height, width=plot_width)
 
