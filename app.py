@@ -8,7 +8,7 @@ from styles import CUSTOM_CSS
 from datetime import datetime, timezone, timedelta, time
 import pytz
 from data_transformation import load_issues, upsert_jira_data, load_issues_Amparex
-from plotting import apply_font, create_toggle_chart, generate_distinct_colors
+from plotting import apply_font, create_toggle_chart, generate_distinct_colors, create_resolution_time_charts
 from st_aggrid import AgGrid, GridOptionsBuilder
 import pygwalker as pg
 from pygwalker.api.streamlit import StreamlitRenderer, init_streamlit_comm
@@ -450,22 +450,8 @@ with tab_status:
 with tab_cycle_time:
     st.header("⏱️ Ticketbearbeitungszeit (Fertige Tickets)")
 
-# plot time to resolution bin counts using plotly
-# sort by midpoint of intervals/bins
-    result = df[df['currentstatus_name'] == 'Fertig'][['time_to_resolution_bin','key']].groupby('time_to_resolution_bin').count().reset_index()
-    fig = px.bar(result,x='time_to_resolution_bin', y='key')
-    # add x axis label
-
-    fig.update_layout(
-        title='Anzahl Fertige Tickets nach Bearbeitungszeit',
-    )
-    fig.update_xaxes(title_text='Bearbeitungszeit in Stunden')
-    # add y axis label
-    fig.update_yaxes(title_text='Anzahl Fertige Tickets')
-    # set width of plot
-    fig.update_layout(width=1000)
-    fig = apply_font(fig)
-    st.plotly_chart(fig, height=plot_height, width=plot_width)
+    for fig in create_resolution_time_charts(df):
+        st.plotly_chart(fig, height=plot_height, width=plot_width)
 
 # -------------------------------
 # Tab 6 – Resolution Time
