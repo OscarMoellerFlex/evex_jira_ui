@@ -7,17 +7,21 @@ import plotly.express as px
 import plotly.graph_objects as go  # Required for adding the custom text layer
 import pytz
 import streamlit as st
-from pygwalker.api.streamlit import StreamlitRenderer
 from st_aggrid import AgGrid, GridOptionsBuilder
 
 from data_loading import load_data, save_data
-from data_transformation import load_issues, load_issues_Amparex, upsert_jira_data
-from jira_loader import fetch_jira_issues
-from plotting import apply_font, create_toggle_chart, generate_distinct_colors
+from interactive import render_interactive
+from plotting import (
+    apply_font,
+    create_resolution_time_charts,
+    create_toggle_chart,
+    generate_distinct_colors,
+)
+from source_sync import refresh_missing_sources
 from styles import CUSTOM_CSS
 
 # set to dark mode
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="Jira Analytics Dashboard", layout="wide")
 # Apply custom CSS styles
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
@@ -107,6 +111,10 @@ else:
 st.sidebar.write("JIRA Daten aktualisieren.")
 
 if st.sidebar.button("🔄 aktualisieren"):
+    # Reading the local cache does not require a live Jira connection.
+    from data_transformation import load_issues, load_issues_Amparex, upsert_jira_data
+    from jira_loader import fetch_jira_issues
+
     st.sidebar.success("Fetch triggered!")
     issues_ipro = fetch_jira_issues(
         start_dt, end_dt, max_issues=100000, project="SDIPR"
@@ -140,6 +148,11 @@ if st.sidebar.button("🔄 aktualisieren"):
         if column not in columns_new:
             df_combined[column] = ""
     df = upsert_jira_data(df_old, df_combined)
+    try:
+        df, sources_updated = refresh_missing_sources(df)
+        st.sidebar.success(f"{sources_updated} fehlende Ursprünge aus Jira übernommen.")
+    except Exception as exc:
+        st.sidebar.warning(f"Ursprung-Abgleich fehlgeschlagen: {exc}")
     save_data(df)
     st.sidebar.success(f"Data upserted successfully! Overall {len(df)} tickets loaded.")
 
@@ -485,13 +498,18 @@ with tab_ursprung:
     st.header("📊 Aufteilung Ursprung Ticket")
 
     # 'source' is populated from customfield_10675 ("Ursprung Ticket") in data_transformation.py
-    # Rename it so the legend reads "Ursprung" instead of the internal column name.
-    df_ursprung = df[df["source"].fillna("") != ""].rename(
-        columns={"source": "Ursprung Ticket"}
+    # Include unset values in the totals, matching the processing-time charts.
+    df_ursprung = df.rename(columns={"source": "Ursprung Ticket"}).copy()
+    df_ursprung["Ursprung Ticket"] = (
+        df_ursprung["Ursprung Ticket"]
+        .astype("string")
+        .fillna("")
+        .str.strip()
+        .replace("", "Unbekannt")
     )
 
     if df_ursprung.empty:
-        st.info("Keine Tickets mit gesetztem 'Ursprung Ticket' im gewählten Zeitraum.")
+        st.info("Keine Tickets im gewählten Zeitraum.")
     else:
         create_toggle_chart(
             df=df_ursprung,
@@ -541,27 +559,8 @@ with tab_status:
 with tab_cycle_time:
     st.header("⏱️ Ticketbearbeitungszeit (Fertige Tickets)")
 
-    # plot time to resolution bin counts using plotly
-    # sort by midpoint of intervals/bins
-    result = (
-        df[df["currentstatus_name"] == "Fertig"][["time_to_resolution_bin", "key"]]
-        .groupby("time_to_resolution_bin")
-        .count()
-        .reset_index()
-    )
-    fig = px.bar(result, x="time_to_resolution_bin", y="key")
-    # add x axis label
-
-    fig.update_layout(
-        title="Anzahl Fertige Tickets nach Bearbeitungszeit",
-    )
-    fig.update_xaxes(title_text="Bearbeitungszeit in Stunden")
-    # add y axis label
-    fig.update_yaxes(title_text="Anzahl Fertige Tickets")
-    # set width of plot
-    fig.update_layout(width=1000)
-    fig = apply_font(fig)
-    st.plotly_chart(fig, height=plot_height, width=plot_width)
+    for fig in create_resolution_time_charts(df):
+        st.plotly_chart(fig, height=plot_height, width=plot_width)
 
 # -------------------------------
 # Tab 6 – Resolution Time
@@ -656,6 +655,23 @@ with tab_raw:
 # -------------------------------
 with tab_interactive:
     st.header("📄 Interaktiv")
+    if "source_sync_success" in st.session_state:
+        sources_updated = st.session_state.pop("source_sync_success")
+        st.success(f"{sources_updated} fehlende Ursprünge aus Jira übernommen.")
+    if st.button(
+        "🔄 Fehlenden Ursprung aktualisieren",
+        help="Prüft alle gespeicherten Tickets mit leerem Ursprung in Jira, unabhängig vom gewählten Zeitraum und der Firma.",
+    ):
+        try:
+            with st.spinner("Fehlende Ursprünge werden mit Jira abgeglichen …"):
+                cached_df, sources_updated = refresh_missing_sources(load_data())
+                save_data(cached_df)
+            st.session_state["source_sync_success"] = sources_updated
+        except Exception as exc:
+            st.error(f"Ursprung-Abgleich fehlgeschlagen: {exc}")
+        else:
+            st.rerun()
+
     # pygwalker's StreamlitRenderer divides by the sample length, so an empty
     # frame raises ZeroDivisionError. Bail out early instead.
     if df.empty:
@@ -671,8 +687,7 @@ with tab_interactive:
         ]
         df_interactive = df.drop(columns=problem_cols)
         # display dataframe with pygwalker
-        renderer = StreamlitRenderer(df_interactive)
-        renderer.explorer()
+        render_interactive(df_interactive)
 
         st.write("\n\n\n\n\n\n")
 

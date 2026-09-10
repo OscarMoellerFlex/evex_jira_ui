@@ -1,6 +1,7 @@
 import colorsys
 
 import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
@@ -14,6 +15,71 @@ def generate_distinct_colors(n):
         r, g, b = colorsys.hsv_to_rgb(h, 0.65, 0.9)
         colors.append(f"rgb({int(r*255)},{int(g*255)},{int(b*255)})")
     return colors
+
+
+def create_resolution_time_charts(df):
+    """Build comparable duration charts from the same completed-ticket cohort."""
+    completed = df.loc[df["currentstatus_name"] == "Fertig"].copy()
+    bin_col = "time_to_resolution_bin"
+    bins = completed[bin_col]
+    if isinstance(bins.dtype, pd.CategoricalDtype):
+        bin_order = bins.cat.categories.tolist()
+    else:
+        # Cached data may store the duration labels as strings instead.
+        bin_order = sorted(
+            bins.dropna().unique(),
+            key=lambda label: float(str(label).split("–")[0]),
+        )
+
+    totals = completed.groupby(bin_col, observed=False)["key"].count()
+    y_max = max(1, totals.max() if not totals.empty else 0) * 1.15
+    figures = []
+    for group_col, group_label in [
+        (None, None),
+        ("request_type", "Quelle"),
+        ("source", "Ursprung Ticket"),
+    ]:
+        group_cols = [bin_col]
+        if group_col:
+            # Include unset fields so all three charts retain the same totals.
+            values = completed.get(
+                group_col, pd.Series(index=completed.index, dtype="object")
+            )
+            completed[group_col] = (
+                values.astype("string").fillna("").str.strip().replace("", "Unbekannt")
+            )
+            group_cols.append(group_col)
+
+        result = (
+            completed.groupby(group_cols, observed=False)["key"].count().reset_index()
+        )
+        title = "Anzahl Fertige Tickets nach Bearbeitungszeit"
+        if group_label:
+            title += f" – {group_label}"
+        fig = px.bar(
+            result,
+            x=bin_col,
+            y="key",
+            color=group_col,
+            category_orders={bin_col: bin_order},
+            labels={
+                bin_col: "Bearbeitungszeit in Stunden",
+                "key": "Anzahl Fertige Tickets",
+                **({group_col: group_label} if group_col else {}),
+            },
+            title=title,
+        )
+        fig = apply_font(fig)
+        fig.update_layout(barmode="stack", margin=dict(l=100, r=40, b=80))
+        fig.update_xaxes(
+            type="category",
+            categoryorder="array",
+            categoryarray=bin_order,
+            range=[-0.5, max(len(bin_order) - 0.5, 0.5)],
+        )
+        fig.update_yaxes(range=[0, y_max])
+        figures.append(fig)
+    return figures
 
 
 def create_toggle_chart(
