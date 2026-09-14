@@ -6,6 +6,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+MODE_ABS = "Absolute Zahlen"
+MODE_LOG = "Absolut (log)"
+MODE_REL = "Relativ (%)"
+
 
 def generate_distinct_colors(n):
     # evenly spaced hues in HSV space
@@ -94,6 +98,7 @@ def create_toggle_chart(
     sort_x_by_total=False,
     plot_height=400,
     plot_width=None,
+    allow_log=False,
 ):
     """
     Generates a stacked bar chart with:
@@ -141,16 +146,17 @@ def create_toggle_chart(
     column_totals = result.groupby(x_col)[count_col].sum().reset_index()
 
     # 4. Streamlit Toggle
+    modes = [MODE_ABS, MODE_LOG, MODE_REL] if allow_log else [MODE_ABS, MODE_REL]
     mode = st.radio(
         "Ansicht wählen:",
-        ["Absolute Zahlen", "Relativ (%)"],
+        modes,
         horizontal=True,
         index=0,
         key=toggle_key,
     )
 
     # 5. Configure Variables based on Toggle
-    if mode == "Absolute Zahlen":
+    if mode in (MODE_ABS, MODE_LOG):
         y_val = count_col
         y_title = "Anzahl Tickets"
         y_format = None
@@ -204,7 +210,20 @@ def create_toggle_chart(
 
     # 9. Final Layout
     fig.update_xaxes(title_text=x_label if x_label else x_col)
-    fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
+    if mode == MODE_LOG:
+        # A log axis cannot start at 0, so the [0, y_max] range must not be set.
+        fig.update_yaxes(title_text=y_title, tickformat=y_format, type="log")
+        fig.add_annotation(
+            text="Log-Skala – Balkenanteile sind nicht proportional lesbar",
+            xref="paper",
+            yref="paper",
+            x=0,
+            y=1.06,
+            showarrow=False,
+            font=dict(size=12, color="#B00020"),
+        )
+    else:
+        fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
     # Plotly titles the legend with the color column's name; the swatches are
     # self-explanatory, so drop it.
     fig.update_layout(legend_title_text="")
