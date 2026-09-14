@@ -95,7 +95,9 @@ else:
     )
     st.sidebar.info("Bitte Enddatum wählen.")
 
-tz = pytz.UTC
+# `created` is Europe/Berlin (data_transformation.TZ), so the picked day must
+# start at 00:00 Berlin - building these in UTC shifted the window by 1-2h.
+tz = pytz.timezone("Europe/Berlin")
 
 start_dt = tz.localize(datetime.combine(start_date, time.min))
 end_dt = tz.localize(datetime.combine(end_date, time.max))
@@ -117,10 +119,10 @@ if st.sidebar.button("🔄 aktualisieren"):
 
     st.sidebar.success("Fetch triggered!")
     issues_ipro = fetch_jira_issues(
-        start_dt, end_dt, max_issues=100000, project="SDIPR"
+        start_dt, end_dt, max_issues=100000, project="SDIPR", save_path=None
     )
     issues_amparex = fetch_jira_issues(
-        start_dt, end_dt, max_issues=100000, project="SDAX"
+        start_dt, end_dt, max_issues=100000, project="SDAX", save_path=None
     )
     if not issues_ipro and not issues_amparex:
         # An empty result is usually a silent auth failure (Jira answers 401 with

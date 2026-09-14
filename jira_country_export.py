@@ -131,7 +131,7 @@ def load_issues(
             f"{start}..{end} (max {max_issues})"
         )
         return fetch_jira_issues(
-            start_dt, end_dt, max_issues=max_issues, project=project
+            start_dt, end_dt, max_issues=max_issues, project=project, save_path=None
         )
     if not os.path.exists(input_path):
         raise FileNotFoundError(
