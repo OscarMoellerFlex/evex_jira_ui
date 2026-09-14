@@ -30,9 +30,9 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from desk_sync import write_json_atomic
 
 from data_loading import DATA_PATH, load_data, save_data
+from desk_sync import write_json_atomic
 from jira_loader import (
     CLOUD_ID,
     WORKSPACE_ID,
