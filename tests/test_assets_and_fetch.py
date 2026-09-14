@@ -1,6 +1,7 @@
 import importlib
 import unittest
 from datetime import UTC, datetime
+from secrets import token_hex
 from unittest.mock import MagicMock, patch
 
 with patch("jira.JIRA"):
@@ -85,7 +86,7 @@ class FetchTests(unittest.TestCase):
                 loader,
                 JIRA_URL="https://jira.example",
                 JIRA_USERNAME="test-user",
-                JIRA_PASSWORD="test-token",
+                JIRA_PASSWORD=token_hex(16),
             )
         )
 
