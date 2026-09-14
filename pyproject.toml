@@ -32,6 +32,3 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
-
-[tool.bandit]
-exclude_dirs = ["tests"]
