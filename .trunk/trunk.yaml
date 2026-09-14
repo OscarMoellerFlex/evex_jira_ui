@@ -26,7 +26,7 @@ lint:
     - yamllint@1.38.0
     - bandit@1.9.4
     - black@26.5.1
-    - checkov@3.3.16
+    - checkov@3.3.17
     - dotenv-linter@4.0.0
     - git-diff-check
     - grype@0.118.0
