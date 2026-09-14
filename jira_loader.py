@@ -1,10 +1,15 @@
 import json
 import os
-from functools import lru_cache
+import re
+from datetime import timedelta
+from functools import cache
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
 from jira import JIRA
+
+from service_desks import as_utc, effective_start, filter_issue_window
 
 load_dotenv(override=True)
 
@@ -13,25 +18,21 @@ JIRA_URL = os.getenv("JIRA_URL")
 JIRA_USERNAME = os.getenv("JIRA_USERNAME")
 JIRA_PASSWORD = os.getenv("JIRA_PASSWORD")
 
-# Fail fast on a missing token. Jira answers an unauthenticated search with
-# HTTP 401 *and an empty result page* rather than an error, so without this the
-# app silently fetches 0 issues and only blows up later in the transform step.
-if not (JIRA_PASSWORD or "").strip():
-    raise RuntimeError(
-        "JIRA_PASSWORD is not set. Add it to .env before starting the app."
-    )
-
-jira = JIRA(server=JIRA_URL, basic_auth=(JIRA_USERNAME, JIRA_PASSWORD))
-
 CLOUD_ID = "242cf880-c51a-4277-9381-781d5ae181df"
-SANDBOX_CLOUD_ID = "8a3828c5-f874-43ce-9367-3d9b73c02832"
 
 WORKSPACE_ID = "9926cb30-3f07-4fb2-9c83-aa4fc551c721"
-SANDBOX_WORKSPACE_ID = "8a799a44-1189-445f-9b88-56372496d3f0"
+
+
+def _require_credentials():
+    if not all((JIRA_URL, JIRA_USERNAME, JIRA_PASSWORD)):
+        raise RuntimeError(
+            "Jira credentials missing (JIRA_URL, JIRA_USERNAME, JIRA_PASSWORD)."
+        )
 
 
 def jira_request(url, params=None, timeout=30):
     """Helper function to make authenticated requests to the JIRA API."""
+    _require_credentials()
     response = requests.get(
         url,
         auth=(JIRA_USERNAME, JIRA_PASSWORD),
@@ -43,9 +44,11 @@ def jira_request(url, params=None, timeout=30):
     return response.json()
 
 
-@lru_cache(maxsize=None)
+@cache
 def fetch_asset_object(
-    cloud_id: str = CLOUD_ID, workspace_id: str = WORKSPACE_ID, object_id: str = None
+    cloud_id: str = CLOUD_ID,
+    workspace_id: str = WORKSPACE_ID,
+    object_id: str | None = None,
 ):
     """Fetch a Jira Assets (Insight) object via the Atlassian Cloud Assets REST API."""
     url = f"https://api.atlassian.com/ex/jira/{cloud_id}/jsm/assets/workspace/{workspace_id}/v1/object/{object_id}"
@@ -55,7 +58,7 @@ def fetch_asset_object(
 
 def get_workspace_id(workspace_name):
     """Fetch the workspace ID for a given workspace name."""
-    url = f"https://api.atlassian.com/ex/jira/{SANDBOX_CLOUD_ID}/jsm/assets/workspace/list"
+    url = f"https://api.atlassian.com/ex/jira/{CLOUD_ID}/jsm/assets/workspace/list"
     workspaces = jira_request(url).get("values", [])
     for ws in workspaces:
         if ws.get("name", "").lower() == workspace_name.lower():
@@ -65,17 +68,17 @@ def get_workspace_id(workspace_name):
 
 def get_workspaces():
     # https://<Assets Site Name>.atlassian.net/rest/servicedeskapi/assets/workspace
-    url = "https://amparex.atlassian.net/rest/servicedeskapi/assets/workspace"
+    url = f"{JIRA_URL.rstrip('/')}/rest/servicedeskapi/assets/workspace"
     # url = f"https://api.atlassian.com/ex/jira/{CLOUD_ID}/jsm/assets/workspace/list"
     return jira_request(url)
 
 
 def fetch_object_schema_list(
-    start_at=0, max_results=50, include_counts=False, workspace_id=SANDBOX_WORKSPACE_ID
+    start_at=0, max_results=50, include_counts=False, workspace_id=WORKSPACE_ID
 ):
     """Fetch a page of Jira Assets object schemas via the Atlassian Cloud Assets REST API."""
     url = (
-        f"https://api.atlassian.com/ex/jira/{SANDBOX_CLOUD_ID}/jsm/assets/workspace/"
+        f"https://api.atlassian.com/ex/jira/{CLOUD_ID}/jsm/assets/workspace/"
         f"{workspace_id}/v1/objectschema/list"
     )
     return jira_request(
@@ -120,6 +123,54 @@ def get_asset_attribute(asset, attribute_name):
     return None
 
 
+ASSET_FIELDS = (
+    "customfield_10680",
+    "customfield_10679",
+    "customfield_10673",
+    "customfield_10674",
+)
+
+
+def enrich_issue_assets(issue):
+    """Resolve only normal-workspace references; retain explicit optional failures."""
+    result = dict(issue)
+    result.pop("customer", None)
+    result["customer_country"] = None
+    result["asset_labels"] = {}
+    result["asset_errors"] = []
+    result["assets_cloud_id"] = CLOUD_ID
+    result["assets_workspace_id"] = WORKSPACE_ID
+    for field in ASSET_FIELDS:
+        for ref in issue.get("fields", {}).get(field) or []:
+            object_id = str(ref.get("objectId", ""))
+            workspace = ref.get("workspaceId")
+            if not object_id or workspace != WORKSPACE_ID:
+                result["asset_errors"].append(
+                    f"{field}: unresolved workspace reference {object_id}"
+                )
+                continue
+            try:
+                asset = fetch_asset_object(CLOUD_ID, WORKSPACE_ID, object_id)
+                if str(asset.get("id")) != object_id:
+                    raise ValueError("Assets returned a different object identity")
+                label = asset.get("label") or asset.get("name")
+                if label:
+                    result["asset_labels"][object_id] = label
+                if field == "customfield_10673":
+                    result["customer"] = asset
+                    result["customer_country"] = get_asset_attribute(
+                        asset, "Land"
+                    ) or get_asset_attribute(asset, "Country")
+            except (requests.RequestException, PermissionError, ValueError) as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                result["asset_errors"].append(
+                    f"{field}/{object_id}: HTTP {status}"
+                    if status
+                    else f"{field}/{object_id}: {type(exc).__name__}"
+                )
+    return result
+
+
 def _issue_updated_ts(issue):
     """Sort key for 'recency': the issue's fields.updated (ISO 8601) or ''."""
     return issue.get("fields", {}).get("updated") or ""
@@ -152,79 +203,67 @@ def fetch_jira_issues(
     save_path="data/jira_issues.json",
     progress_cb=None,
 ):
-    jira = JIRA(
-        server=JIRA_URL,
-        basic_auth=(JIRA_USERNAME, JIRA_PASSWORD),
-    )
-    start_str = start_dt.strftime("%Y-%m-%d %H:%M")
-    end_str = end_dt.strftime("%Y-%m-%d %H:%M")
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", project):
+        raise ValueError("Invalid Jira project key")
+    start_dt = effective_start(project, start_dt)
+    end_dt = as_utc(end_dt) if end_dt else None
+    if start_dt and end_dt and start_dt > end_dt:
+        return []
+    if max_issues < 1:
+        raise ValueError("max_issues must be positive")
+    _require_credentials()
+    jira = JIRA(server=JIRA_URL, basic_auth=(JIRA_USERNAME, JIRA_PASSWORD))
+    # Confirm authentication and project visibility before accepting an empty search.
+    account = jira.myself()
+    jira.project(project)
+    account_tz = ZoneInfo(account.get("timeZone") or "Europe/Berlin")
+    clauses = [f"project = {project}"]
+    if start_dt:
+        clauses.append(f"created >= '{start_dt.astimezone(account_tz):%Y-%m-%d %H:%M}'")
+    if end_dt:
+        # Search a superset to avoid dropping the last minute; exact filter below.
+        upper = end_dt.astimezone(account_tz) + timedelta(minutes=1)
+        clauses.append(f"created < '{upper:%Y-%m-%d %H:%M}'")
+    jql = " AND ".join(clauses) + " ORDER BY created DESC"
     all_issues = []
-    if start_dt is not None and end_dt is not None:
-        jql = f"project = {project} AND created >= '{start_str}' AND created <= '{end_str}' ORDER BY created DESC"
-    else:
-        jql = f"project = {project} ORDER BY created DESC"
     next_token = None
-    counter = 0
-    b_max_results = 100
-    print(f"Fetching issues with JQL: {jql}")
+    seen_tokens = set()
+    fetched = 0
     while True:
-
         page = jira.enhanced_search_issues(
             jql_str=jql,
-            maxResults=b_max_results,  # per API call
+            maxResults=min(100, max_issues - fetched),
             nextPageToken=next_token,
             json_result=True,
             expand="*all,customfield_10673,customfield_10674",
         )
-        for issue in page.get("issues", []):
-            fields = issue.get("fields", {})
-            customer_assets = fields.get("customfield_10673") or []
-            country = None
-            if customer_assets:
-                last_asset = customer_assets[-1]
-                workspace_id = last_asset.get("workspaceId")
-                object_id = last_asset.get("objectId")
-                if workspace_id and object_id:
-                    try:
-                        asset = fetch_asset_object(
-                            SANDBOX_CLOUD_ID, SANDBOX_WORKSPACE_ID, object_id
-                        )
-                        country = get_asset_attribute(
-                            asset, "Land"
-                        ) or get_asset_attribute(asset, "Country")
-                        issue["customer_country"] = country
-                        issue["customer"] = asset
-                    except requests.HTTPError as exc:
-                        print(
-                            f"Failed to fetch asset {workspace_id}:{object_id}: {exc} — body: {exc.response.text[:300]}"
-                        )
-                    except requests.RequestException as exc:
-                        print(
-                            f"Failed to fetch asset {workspace_id}:{object_id}: {exc}"
-                        )
-        all_issues.extend(page.get("issues", []))
+        if page.get("errorMessages") or "issues" not in page:
+            raise RuntimeError(f"Jira returned an invalid result for {project}")
+        batch = page["issues"]
+        fetched += len(batch)
+        all_issues.extend(
+            enrich_issue_assets(issue)
+            for issue in filter_issue_window(project, batch, start_dt, end_dt)
+        )
         if progress_cb:
             progress_cb(len(all_issues))
-
         next_token = page.get("nextPageToken")
-
-        if not next_token:  # no more pages
+        if not next_token:
             break
-        counter += b_max_results
-        if counter >= max_issues:
-            break
-
-    print("Total issues fetched:", len(all_issues))
-    # save all_issues to json file (pass save_path=None to skip, e.g. when
-    # the caller merges the result into an existing store itself)
+        if fetched >= max_issues:
+            raise RuntimeError(
+                f"{project}: issue limit reached before all pages were fetched"
+            )
+        if next_token in seen_tokens:
+            raise RuntimeError(f"{project}: repeated pagination token")
+        seen_tokens.add(next_token)
+    all_issues = dedupe_issues(all_issues)
     if save_path:
-        with open(save_path, "w") as f:
-            json.dump(all_issues, f, indent=4)
-    # dates = [issue["created"] for issue in all_issues]
-    # dates = [datetime.strptime(date, "%Y-%m-%dT%H:%M:%S.%f%z") for date in dates]
-    # dates = [date.date() for date in dates]
-    # dates = [date.strftime("%Y-%m-%d") for date in dates]
+        from pathlib import Path
 
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(save_path, "w") as f:
+            json.dump(all_issues, f)
     return all_issues
 
 

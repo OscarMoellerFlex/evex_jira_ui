@@ -10,9 +10,8 @@ Notes discovered from the live data:
   * Ansprechpartner assets do not carry a "Land" attribute, so in practice
     the country almost always comes from the Filiale or Zentrale asset --
     which is exactly why the escalation is needed.
-  * Asset objects resolve against the *sandbox* Assets workspace
-    (SANDBOX_CLOUD_ID / SANDBOX_WORKSPACE_ID); the production workspace
-    returns 403. This matches jira_loader.fetch_jira_issues.
+  * Asset objects resolve only against the normal Assets workspace.
+    Inaccessible objects remain unresolved; sandbox data is never substituted.
 
 Usage:
   # Default: use the already-pulled tickets in data/jira_issues.json
@@ -29,14 +28,15 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from functools import lru_cache
+from functools import cache
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 
 from jira_loader import (
-    SANDBOX_CLOUD_ID,
-    SANDBOX_WORKSPACE_ID,
+    CLOUD_ID,
+    WORKSPACE_ID,
     fetch_asset_object,
     fetch_jira_issues,
     get_asset_attribute,
@@ -61,11 +61,16 @@ MAX_RETRIES = 6
 BACKOFF_BASE = 2.0  # seconds: 2, 4, 8, 16, 32, 64
 
 
-def _fetch_asset_with_retry(object_id: str):
+def _fetch_asset_with_retry(
+    object_id: str, cloud_id=CLOUD_ID, workspace_id=WORKSPACE_ID
+):
     """Fetch an asset, retrying transient 429/5xx responses with backoff."""
     for attempt in range(MAX_RETRIES):
         try:
-            return fetch_asset_object(SANDBOX_CLOUD_ID, SANDBOX_WORKSPACE_ID, object_id)
+            asset = fetch_asset_object(cloud_id, workspace_id, object_id)
+            if str(asset.get("id")) != str(object_id):
+                raise ValueError("Assets returned a different object identity")
+            return asset
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
             if status in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES - 1:
@@ -80,15 +85,17 @@ def _fetch_asset_with_retry(object_id: str):
             raise  # permanent (404/403/...) or retries exhausted
 
 
-@lru_cache(maxsize=None)
-def resolve_asset_country(object_id: str):
+@cache
+def resolve_asset_country(object_id: str, cloud_id=CLOUD_ID, workspace_id=WORKSPACE_ID):
     """Return the country ("Land"/"Country") of a single asset, or None.
 
     Cached by object_id so shared Zentrale/Filiale assets are fetched once.
     """
     try:
-        asset = _fetch_asset_with_retry(object_id)
-    except Exception as exc:  # permanent error -> country unknown
+        asset = _fetch_asset_with_retry(object_id, cloud_id, workspace_id)
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - report optional/isolated failures  # permanent error -> country unknown
         print(f"  ! failed to fetch asset {object_id}: {exc}")
         return None
     for attr in COUNTRY_ATTRIBUTES:
@@ -103,7 +110,11 @@ def _object_id_for_field(issue_fields: dict, field: str):
     refs = issue_fields.get(field) or []
     if not refs:
         return None
-    return refs[-1].get("objectId")
+    ref = refs[-1]
+    if ref.get("workspaceId") != WORKSPACE_ID:
+        print(f"Unresolved asset: unexpected workspace in {field}; no sandbox fallback")
+        return None
+    return ref.get("objectId")
 
 
 def country_for_issue(issue: dict):
@@ -124,8 +135,12 @@ def load_issues(
 ):
     """Load issues from the saved JSON, or re-pull them from Jira."""
     if refetch:
-        start_dt = datetime.strptime(start, "%Y-%m-%d")
-        end_dt = datetime.strptime(end, "%Y-%m-%d")
+        start_dt = datetime.strptime(start, "%Y-%m-%d").replace(
+            tzinfo=ZoneInfo("Europe/Berlin")
+        )
+        end_dt = datetime.strptime(end, "%Y-%m-%d").replace(
+            tzinfo=ZoneInfo("Europe/Berlin")
+        )
         print(
             f"Re-fetching issues from Jira: project={project} "
             f"{start}..{end} (max {max_issues})"
