@@ -1,0 +1,140 @@
+"""Resolve a ticket's country from its linked Jira Assets objects.
+
+Escalation order is Ansprechpartner -> Filiale -> Zentrale; the first asset
+carrying a "Land" attribute wins. Lookups go through an on-disk cache, so the
+Assets API is never touched during a Streamlit rerun - only the backfill
+script resolves ids.
+"""
+
+import json
+import math
+import os
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+
+import pandas as pd
+
+CACHE_PATH = "data/asset_country.json"
+
+NO_COUNTRY_ON_ASSET = "Kein Land am Asset"
+NO_ASSETS_LINKED = "Keine Assets verknüpft"
+NO_SOURCE = "—"
+
+# Escalation order; also the DataFrame columns holding the asset ids.
+ESCALATION_COLUMNS = ["ansprechpartner", "filiale", "zentrale"]
+
+_ABSENT = {"", "nan", "none", "id_", "id_nan", "id_none", "<na>"}
+
+
+def normalise_object_id(value):
+    """Return the bare objectId for a stored 'ID_<objectId>' cell, or None."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    text = str(value).strip()
+    if text.lower() in _ABSENT:
+        return None
+    if text.startswith("ID_"):
+        text = text[len("ID_") :]
+    text = text.strip()
+    if not text or text.lower() in _ABSENT:
+        return None
+    return text
+
+
+def load_cache(path=CACHE_PATH):
+    """Return {object_id: country_or_None}; {} when the file is absent."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def save_cache(cache, path=CACHE_PATH):
+    """Write the cache atomically, so an interrupted run cannot truncate it."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(cache, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def resolve_missing(object_ids, cache, resolver=None, workers=4):
+    """Resolve ids absent from the cache. Returns (cache, resolved, failed).
+
+    A failed lookup (deleted or forbidden asset, API outage) is counted but
+    NOT written to the cache - caching it as None would be indistinguishable
+    from an asset that genuinely carries no Land.
+    """
+    if resolver is None:
+        # Lazy: jira_country_export pulls in jira_loader, which needs credentials.
+        from jira_country_export import resolve_asset_country
+
+        resolver = resolve_asset_country
+
+    pending = sorted(
+        {
+            object_id
+            for object_id in (normalise_object_id(v) for v in object_ids)
+            if object_id is not None and object_id not in cache
+        }
+    )
+    if not pending:
+        return cache, 0, 0
+
+    def _safe(object_id):
+        try:
+            return object_id, resolver(object_id), False
+        except Exception:
+            return object_id, None, True
+
+    failed = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for object_id, country, errored in pool.map(_safe, pending):
+            if errored:
+                failed += 1
+                continue
+            cache[object_id] = country
+    return cache, len(pending) - failed, failed
+
+
+def classify_country(ansprechpartner, filiale, zentrale, cache):
+    """Return (country, source) for one ticket.
+
+    country is a country name, NO_COUNTRY_ON_ASSET or NO_ASSETS_LINKED;
+    source names the field the country came from, or NO_SOURCE.
+    """
+    linked = False
+    for source, raw in zip(
+        ESCALATION_COLUMNS, (ansprechpartner, filiale, zentrale), strict=True
+    ):
+        object_id = normalise_object_id(raw)
+        if object_id is None:
+            continue
+        linked = True
+        country = cache.get(object_id)
+        if country:
+            return country, source
+    if not linked:
+        return NO_ASSETS_LINKED, NO_SOURCE
+    return NO_COUNTRY_ON_ASSET, NO_SOURCE
+
+
+def attach_country(df, cache):
+    """Return a copy of df with 'Land' and 'land_quelle' columns added."""
+    out = df.copy()
+    blank = pd.Series("", index=out.index, dtype="object")
+    columns = [
+        out[name] if name in out.columns else blank for name in ESCALATION_COLUMNS
+    ]
+    pairs = [classify_country(a, f, z, cache) for a, f, z in zip(*columns, strict=True)]
+    out["Land"] = [country for country, _ in pairs]
+    out["land_quelle"] = [source for _, source in pairs]
+    return out
