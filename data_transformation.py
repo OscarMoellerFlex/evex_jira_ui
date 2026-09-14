@@ -8,6 +8,8 @@ import pandas as pd
 from dotenv import load_dotenv
 from jira import JIRA
 
+from resolution_bands import HOURS_PER_WORKING_DAY, classify_bands
+
 load_dotenv(override=True)
 
 JIRA_URL = os.getenv("JIRA_URL")
@@ -46,6 +48,7 @@ def enrich_jira_time_metrics(
     subdiv: (
         str | None
     ) = None,  # e.g. "BE", "BY", "NW", ...; None = federal holidays only
+    hours_per_working_day: float = HOURS_PER_WORKING_DAY,
     bins: list[float] | None = None,
 ) -> pd.DataFrame:
     """
@@ -154,6 +157,13 @@ def enrich_jira_time_metrics(
             - pd.Timestamp.combine(pd.Timestamp.today().date(), business_start)
         ).total_seconds()
         / 3600.0
+    )
+
+    # ---------- resolution band (Länder tab) ----------
+    out["resolution_band"] = classify_bands(
+        out["time_to_resolution_biz_hours"],
+        out["is_done"],
+        hours_per_working_day=hours_per_working_day,
     )
 
     # ---------- bins on elapsed hours (real time) ----------
@@ -421,7 +431,7 @@ def load_issues(issues):
     DT_COLS = ["created", "updated", "currentstatus_date"]
     for c in DT_COLS:
         df[c] = pd.to_datetime(df[c], errors="coerce", utc=True).dt.tz_convert(TZ)
-    df = enrich_jira_time_metrics(df)
+    df = enrich_jira_time_metrics(df, subdiv="BW")
 
     df["Hauptkategorie"] = df["main_category_id"].map(object_id_to_name)
     df["Unterkategorie"] = df["sub_category_id"].map(object_id_to_name).fillna("NA")
@@ -602,7 +612,7 @@ def load_issues_Amparex(issues):
     DT_COLS = ["created", "updated", "currentstatus_date"]
     for c in DT_COLS:
         df[c] = pd.to_datetime(df[c], errors="coerce", utc=True).dt.tz_convert(TZ)
-    df = enrich_jira_time_metrics(df)
+    df = enrich_jira_time_metrics(df, subdiv="BW")
 
     df["Hauptkategorie"] = df["main_category_id"].map(object_id_to_name)
     df["Unterkategorie"] = df["sub_category_id"].map(object_id_to_name).fillna("NA")
