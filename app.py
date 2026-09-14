@@ -17,6 +17,7 @@ from plotting import (
     create_toggle_chart,
     generate_distinct_colors,
 )
+from resolution_bands import BAND_COLORS, BAND_NOT_DONE, BAND_UNDER_1H
 from source_sync import refresh_missing_sources
 from styles import CUSTOM_CSS
 
@@ -184,6 +185,7 @@ plot_width = 1500
     tab_subcategories,
     tab_sources,
     tab_ursprung,
+    tab_countries,
     tab_status,
     tab_cycle_time,
     tab_resolution_time,
@@ -198,6 +200,7 @@ plot_width = 1500
         "📊 Unterkategorien",
         "📊 Quellen",
         "📊 Ursprung",
+        "🌍 Länder",
         "📊 Offene Tickets nach Status",
         "⏱️ Ticketbearbeitungszeit",
         "📈 Erstlösequote",
@@ -523,6 +526,45 @@ with tab_ursprung:
             plot_height=plot_height,
             plot_width=plot_width,
         )
+
+
+# -------------------------------
+# Tab – Länder
+# -------------------------------
+with tab_countries:
+    st.header("🌍 Aufteilung Länder")
+
+    missing = [c for c in ("Land", "resolution_band") if c not in df.columns]
+    if missing:
+        # An older pickle predates the country backfill; hint instead of crashing.
+        st.info(
+            f"Länderdaten fehlen (Spalten: {', '.join(missing)}). "
+            "Bitte `backfill_country.py` ausführen oder Daten aktualisieren."
+        )
+    else:
+        include_open = st.checkbox(
+            "Nicht abgeschlossene Tickets einblenden",
+            value=True,
+            key="land_include_open",
+        )
+        df_land = df if include_open else df[df["resolution_band"] != BAND_NOT_DONE]
+
+        if df_land.empty:
+            st.info("Keine Tickets im gewählten Zeitraum.")
+        else:
+            create_toggle_chart(
+                df_land,
+                x_col="Land",
+                group_col="resolution_band",
+                x_label="Land",
+                toggle_key="toggle_countries",
+                color_map=BAND_COLORS,
+                force_bottom_value=BAND_UNDER_1H,
+                sort_x_by_total=True,
+                allow_log=True,
+                plot_height=plot_height,
+                plot_width=plot_width,
+            )
 
 
 # -------------------------------
