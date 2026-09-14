@@ -307,6 +307,7 @@ def load_issues(issues):
         "n_clones": [],
         "zentrale": [],
         "filiale": [],
+        "ansprechpartner": [],
         "Link": [],
         "clones_of_clones": [],
         "clone_types_of_clones": [],
@@ -394,6 +395,12 @@ def load_issues(issues):
             df["cloned_by"].append("")
 
         try:
+            df["ansprechpartner"].append(
+                "ID_" + str(issue["fields"]["customfield_10689"][0]["objectId"])
+            )
+        except Exception:
+            df["ansprechpartner"].append("")
+        try:
             df["zentrale"].append(
                 "ID_" + str(issue["fields"]["customfield_10673"][0]["objectId"])
             )
@@ -419,6 +426,7 @@ def load_issues(issues):
     df["Hauptkategorie"] = df["main_category_id"].map(object_id_to_name)
     df["Unterkategorie"] = df["sub_category_id"].map(object_id_to_name).fillna("NA")
 
+    df["ansprechpartner"] = df["ansprechpartner"].astype(str)
     df["zentrale"] = df["zentrale"].astype(str)
     df["filiale"] = df["filiale"].astype(str)
     df["firma"] = "IPRO"
@@ -477,6 +485,7 @@ def load_issues_Amparex(issues):
         "n_clones": [],
         "zentrale": [],
         "filiale": [],
+        "ansprechpartner": [],
         "Link": [],
         "clones_of_clones": [],
         "clone_types_of_clones": [],
@@ -567,6 +576,12 @@ def load_issues_Amparex(issues):
             df["cloned_by"].append("")
 
         try:
+            df["ansprechpartner"].append(
+                "ID_" + str(issue["fields"]["customfield_10689"][0]["objectId"])
+            )
+        except Exception:
+            df["ansprechpartner"].append("")
+        try:
             df["zentrale"].append(
                 "ID_" + str(issue["fields"]["customfield_10673"][0]["objectId"])
             )
@@ -592,6 +607,7 @@ def load_issues_Amparex(issues):
     df["Hauptkategorie"] = df["main_category_id"].map(object_id_to_name)
     df["Unterkategorie"] = df["sub_category_id"].map(object_id_to_name).fillna("NA")
 
+    df["ansprechpartner"] = df["ansprechpartner"].astype(str)
     df["zentrale"] = df["zentrale"].astype(str)
     df["filiale"] = df["filiale"].astype(str)
     df["firma"] = "Amparex"
