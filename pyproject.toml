@@ -29,3 +29,9 @@ dependencies = [
   "streamlit>=1.54.0,<1.57",
   "streamlit-aggrid>=1.2.1",
 ]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]

@@ -39,6 +39,11 @@ lint:
     - ruff@0.16.6
     - taplo@0.10.0
     - trufflehog@3.97.4
+  ignore:
+    - linters:
+        - bandit
+      paths:
+        - tests
 actions:
   disabled:
     - trunk-announce
