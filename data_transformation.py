@@ -9,6 +9,8 @@ import pandas as pd
 from dotenv import load_dotenv
 from jira import JIRA
 
+from jira_loader import WORKSPACE_ID
+
 load_dotenv(override=True)
 
 JIRA_URL = os.getenv("JIRA_URL")
@@ -315,6 +317,7 @@ _ISSUE_COLUMNS = [
     "assets_workspace_id",
     "assets_cloud_id",
     "asset_errors",
+    "category_asset_errors",
 ]
 
 
@@ -337,11 +340,17 @@ def _asset_id(fields, field_name):
     return "" if value is None else str(value)
 
 
-def _asset_label(issue, object_id):
+def _asset_label(issue, field_name):
+    fields = issue.get("fields") or {}
+    object_id = _asset_id(fields, field_name)
     normal_marker = any(
         name in issue
         for name in ("asset_labels", "assets_workspace_id", "assets_cloud_id")
     )
+    if normal_marker and object_id:
+        reference = fields[field_name][0]
+        if reference.get("workspaceId") != WORKSPACE_ID:
+            return "Unbekannt"
     labels = issue.get("asset_labels") or {}
     if object_id and str(object_id) in labels and labels[str(object_id)]:
         return str(labels[str(object_id)])
@@ -420,8 +429,11 @@ def _extract_issue(issue, comment_separator):
         "assets_workspace_id": issue.get("assets_workspace_id", "") or "",
         "assets_cloud_id": issue.get("assets_cloud_id", "") or "",
         "asset_errors": error_text,
-        "Hauptkategorie": _asset_label(issue, main_id),
-        "Unterkategorie": _asset_label(issue, sub_id),
+        # Fresh category values supersede migration diagnostics. Current refresh
+        # failures are reported by asset_errors, including category failures.
+        "category_asset_errors": "",
+        "Hauptkategorie": _asset_label(issue, "customfield_10680"),
+        "Unterkategorie": _asset_label(issue, "customfield_10679"),
     }
 
 

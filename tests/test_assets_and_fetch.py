@@ -79,6 +79,16 @@ class AssetsTests(unittest.TestCase):
 
 
 class FetchTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(
+            patch.multiple(
+                loader,
+                JIRA_URL="https://jira.example",
+                JIRA_USERNAME="test-user",
+                JIRA_PASSWORD="test-token",
+            )
+        )
+
     def test_search_uses_account_timezone_and_filters_exact_cutoff(self):
         fake = MagicMock()
         fake.myself.return_value = {"timeZone": "America/New_York"}

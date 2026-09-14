@@ -2,7 +2,7 @@ import importlib
 import json
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +11,59 @@ with patch("jira.JIRA"):
 
 
 class BackfillTests(unittest.TestCase):
+    def test_relative_window_resume_accepts_elapsed_time(self):
+        for project in ("SDIPR", "SDAX"):
+            for window in ([], ["--days", "60"]):
+                with (
+                    self.subTest(project=project, window=window),
+                    tempfile.TemporaryDirectory() as tmp,
+                    patch.object(backfill, "CHECKPOINT_TMPL", tmp + "/{project}.json"),
+                    patch.object(
+                        backfill, "fetch_jira_issues", return_value=[]
+                    ) as fetch,
+                    patch.object(backfill, "datetime", wraps=datetime) as clock,
+                ):
+                    clock.now.return_value = datetime(2026, 9, 10, tzinfo=UTC)
+                    self.assertEqual(backfill.main(["--project", project, *window]), 0)
+                    clock.now.return_value = datetime(2026, 9, 10, 0, 0, 1, tzinfo=UTC)
+                    self.assertEqual(
+                        backfill.main(["--project", project, *window, "--resume"]), 0
+                    )
+                    self.assertEqual(
+                        fetch.call_args.args[0], datetime(2026, 9, 10, tzinfo=UTC)
+                    )
+                    saved = json.loads((Path(tmp) / f"{project}.json").read_text())
+                    self.assertEqual(saved["end"], "2026-09-10T00:00:01+00:00")
+
+    def test_resume_reuses_coverage_but_rejects_expansion(self):
+        start = datetime(2026, 9, 1, tzinfo=UTC)
+        end = datetime(2026, 9, 10, tzinfo=UTC)
+        issues = [
+            {
+                "key": f"SDAX-{day}",
+                "fields": {"created": f"2026-09-{day:02d}T00:00:00Z"},
+                "assets_cloud_id": backfill.CLOUD_ID,
+                "assets_workspace_id": backfill.WORKSPACE_ID,
+            }
+            for day in (1, 2)
+        ]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(backfill, "CHECKPOINT_TMPL", tmp + "/{project}.json"),
+            patch.object(backfill, "fetch_jira_issues", return_value=issues),
+        ):
+            backfill.fetch_project("SDAX", start, end, False)
+            with self.assertRaisesRegex(ValueError, "start/project"):
+                backfill.fetch_project("SDAX", start - timedelta(days=1), end, True)
+            with patch.object(backfill, "fetch_jira_issues", return_value=[]):
+                result = backfill.fetch_project(
+                    "SDAX",
+                    start + timedelta(seconds=1),
+                    end + timedelta(seconds=1),
+                    True,
+                )
+            self.assertEqual([i["key"] for i in result], ["SDAX-2"])
+
     def test_explicit_start_conflicts_with_days(self):
         with self.assertRaises(SystemExit):
             backfill.parse_args(["--start", "2026-09-01", "--days", "7"])

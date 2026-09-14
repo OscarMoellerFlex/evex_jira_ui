@@ -88,10 +88,10 @@ def fetch_project(project, start_dt, end_dt, resume):
         # Date-only legacy checkpoints have neither exact coverage nor trustworthy
         # enrichment provenance. Refetch the effective window into normal Assets.
         if saved.get("version") == 2:
-            if (
-                saved.get("project") != project
-                or saved.get("start") != start_dt.isoformat()
-            ):
+            saved_start = as_utc(datetime.fromisoformat(saved["start"]))
+            # Relative windows move forward between invocations. Reuse coverage
+            # that starts earlier, then trim cached issues to the requested window.
+            if saved.get("project") != project or saved_start > start_dt:
                 raise ValueError(
                     f"{project}: checkpoint covers a different start/project; rerun without --resume"
                 )
@@ -108,7 +108,7 @@ def fetch_project(project, start_dt, end_dt, resume):
                     or issue.get("asset_errors")
                 ):
                     issues[i] = enrich_issue_assets(issue)
-            fetch_start = saved_end
+            fetch_start = max(start_dt, saved_end)
     started = time.time()
     print(
         f"[{project}] fetching {fetch_start.isoformat()} -> {end_dt.isoformat()}",

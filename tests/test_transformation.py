@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 
+import jira_loader
+
 
 def issue(
     key="SDEU-1",
@@ -48,11 +50,81 @@ def issue(
             "issuelinks": links or [],
         },
     }
+    for field in ("customfield_10680", "customfield_10679"):
+        for reference in raw["fields"][field]:
+            reference["workspaceId"] = jira_loader.WORKSPACE_ID
     raw.update(top_level)
     return raw
 
 
 class TransformationTests(unittest.TestCase):
+    def test_rejected_category_reference_cannot_borrow_same_id_label(self):
+        for rejected_field in ("customfield_10680", "customfield_10679"):
+            for workspace in ("sandbox", None):
+                with self.subTest(field=rejected_field, workspace=workspace):
+                    raw = issue(main_id="41", sub_id="41")
+                    for field in ("customfield_10680", "customfield_10679"):
+                        raw["fields"][field][0]["workspaceId"] = (
+                            workspace
+                            if field == rejected_field
+                            else jira_loader.WORKSPACE_ID
+                        )
+                    with patch.object(
+                        jira_loader,
+                        "fetch_asset_object",
+                        return_value={"id": "41", "label": "Normal category"},
+                    ):
+                        enriched = jira_loader.enrich_issue_assets(raw)
+                    row = self.transformation.load_issues_Euronet([enriched]).iloc[0]
+                    rejected_column = (
+                        "Hauptkategorie"
+                        if rejected_field == "customfield_10680"
+                        else "Unterkategorie"
+                    )
+                    valid_column = (
+                        "Unterkategorie"
+                        if rejected_field == "customfield_10680"
+                        else "Hauptkategorie"
+                    )
+                    self.assertEqual(row[rejected_column], "Unbekannt")
+                    self.assertEqual(row[valid_column], "Normal category")
+
+    def test_refresh_supersedes_migration_errors_only_for_refreshed_rows(self):
+        import asset_migration
+
+        old = self.transformation.load_issues_Euronet([issue(), issue(key="SDEU-2")])
+
+        def denied(*args):
+            raise PermissionError("denied")
+
+        old, _ = asset_migration.migrate_categories(old, fetch=denied)
+        for fails in (False, True):
+
+            def fetch(cloud, workspace, oid, fails=fails):
+                if fails and oid == "main-1":
+                    raise PermissionError("denied")
+                return {"id": oid, "label": "Recovered"}
+
+            with self.subTest(fails=fails):
+                raw = issue()
+                raw["fields"]["customfield_10673"] = []
+                raw["fields"]["customfield_10674"] = []
+                with patch.object(jira_loader, "fetch_asset_object", side_effect=fetch):
+                    enriched = jira_loader.enrich_issue_assets(raw)
+                fresh = self.transformation.load_issues_Euronet([enriched])
+                result = self.transformation.upsert_jira_data(old, fresh).set_index(
+                    "key"
+                )
+                self.assertEqual(
+                    result.loc["SDEU-1", "Hauptkategorie"],
+                    "Unbekannt" if fails else "Recovered",
+                )
+                self.assertEqual(result.loc["SDEU-1", "category_asset_errors"], "")
+                self.assertEqual(bool(result.loc["SDEU-1", "asset_errors"]), fails)
+                self.assertIn(
+                    "PermissionError", result.loc["SDEU-2", "category_asset_errors"]
+                )
+
     @classmethod
     def setUpClass(cls):
         # Replace only the external client boundary; transformation stays real.
