@@ -29,7 +29,6 @@ class CompanyUITests(unittest.TestCase):
             raw["fields"]["customfield_10675"] = None
             frames.append(load_project_issues(project, [raw]))
         frame = pd.concat(frames, ignore_index=True)
-        frame["category_asset_errors"] = ["HTTP 403", "", ""]
         with (
             patch("data_loading.load_data", return_value=frame),
             patch("interactive.render_interactive"),
@@ -41,7 +40,6 @@ class CompanyUITests(unittest.TestCase):
             self.assertFalse(app.exception)
             raw_frame = app.dataframe[0].value
             self.assertEqual(set(raw_frame["key"]), {"SDIPR-1", "SDAX-1", "SDEU-1"})
-            self.assertTrue(any("Assets" in warning.value for warning in app.warning))
             app.multiselect[0].set_value(["Euronet", "Ipro"]).run()
             self.assertFalse(app.exception)
             self.assertEqual(set(app.dataframe[0].value["key"]), {"SDIPR-1", "SDEU-1"})

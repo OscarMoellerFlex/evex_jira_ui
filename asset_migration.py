@@ -47,18 +47,6 @@ def migrate_categories(frame, *, fetch=fetch_asset_object, workers=4):
         result[target] = (
             result[source].fillna("").astype(str).map(labels).fillna("Unbekannt")
         )
-    result["category_assets_cloud_id"] = CLOUD_ID
-    result["category_assets_workspace_id"] = WORKSPACE_ID
-    result["category_asset_errors"] = [
-        "; ".join(
-            f"{oid}: {errors[oid]}"
-            for oid in dict.fromkeys((str(main), str(sub)))
-            if oid in errors
-        )
-        for main, sub in zip(
-            result["main_category_id"], result["sub_category_id"], strict=False
-        )
-    ]
     return result, {
         "objects": len(ids),
         "failed_objects": len(errors),
@@ -95,9 +83,7 @@ def main():
     print(f"Cache backup: {backup}")
     print(f"Category migration: {report}")
     if report["failed_objects"]:
-        print(
-            "Unresolved normal Assets are marked Unbekannt; see category_asset_errors. No sandbox fallback."
-        )
+        print("Unresolved normal Assets are marked Unbekannt. No sandbox fallback.")
 
 
 if __name__ == "__main__":

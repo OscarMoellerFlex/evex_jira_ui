@@ -169,15 +169,6 @@ st.sidebar.info(f"{len(df)} Tickets für die gewählten Firmen im Zeitraum.")
 if df.empty:
     st.info("Keine Daten für die gewählten Firmen im Zeitraum.")
     st.stop()
-asset_incomplete = pd.Series(False, index=df.index)
-for error_column in ("asset_errors", "category_asset_errors"):
-    if error_column in df.columns:
-        asset_incomplete |= df[error_column].fillna("").astype(str).str.strip().ne("")
-if asset_incomplete.any():
-    st.warning(
-        f"Assets-Daten bei {int(asset_incomplete.sum())} Tickets unvollständig. "
-        "Nicht verfügbare Kategorien erscheinen als Unbekannt; Details stehen in den Rohdaten."
-    )
 df_raw = df.copy()
 
 plot_height = 900

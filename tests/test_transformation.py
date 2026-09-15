@@ -119,11 +119,8 @@ class TransformationTests(unittest.TestCase):
                     result.loc["SDEU-1", "Hauptkategorie"],
                     "Unbekannt" if fails else "Recovered",
                 )
-                self.assertEqual(result.loc["SDEU-1", "category_asset_errors"], "")
-                self.assertEqual(bool(result.loc["SDEU-1", "asset_errors"]), fails)
-                self.assertIn(
-                    "PermissionError", result.loc["SDEU-2", "category_asset_errors"]
-                )
+                self.assertNotIn("asset_errors", result.columns)
+                self.assertNotIn("category_asset_errors", result.columns)
 
     @classmethod
     def setUpClass(cls):
@@ -169,9 +166,8 @@ class TransformationTests(unittest.TestCase):
         self.assertAlmostEqual(row["time_to_resolution_h"], 4.0)
         self.assertFalse(bool(row["has_exax_clone"]))
         self.assertFalse(bool(row["has_axt_clone_clone"]))
-        self.assertEqual(row["assets_workspace_id"], "normal-workspace")
-        self.assertEqual(row["assets_cloud_id"], "cloud-1")
-        self.assertEqual(row["asset_errors"], "main-2: HTTP 403")
+        for column in ("assets_workspace_id", "assets_cloud_id", "asset_errors"):
+            self.assertNotIn(column, row.index)
 
     def test_normal_assets_marker_blocks_stale_static_fallback(self):
         """Catches unresolved normal IDs being mislabeled by the legacy map."""

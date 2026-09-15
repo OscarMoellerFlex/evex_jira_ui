@@ -324,10 +324,6 @@ _ISSUE_COLUMNS = [
     "Link",
     "clones_of_clones",
     "clone_types_of_clones",
-    "assets_workspace_id",
-    "assets_cloud_id",
-    "asset_errors",
-    "category_asset_errors",
 ]
 
 
@@ -386,12 +382,6 @@ def _extract_issue(issue, comment_separator):
         for comment in comments
         if isinstance(comment, dict)
     )
-    errors = issue.get("asset_errors") or []
-    if isinstance(errors, str):
-        error_text = errors
-    else:
-        error_text = "\n".join(str(error) for error in errors)
-
     main_id = _asset_id(fields, "customfield_10680")
     sub_id = _asset_id(fields, "customfield_10679")
     cloned_by = _nested(links[0], "inwardIssue", "key") if links else ""
@@ -441,12 +431,6 @@ def _extract_issue(issue, comment_separator):
         "Link": _nested(fields, "customfield_10010", "_links", "agent"),
         "clones_of_clones": clones_of_clones,
         "clone_types_of_clones": clone_types_of_clones,
-        "assets_workspace_id": issue.get("assets_workspace_id", "") or "",
-        "assets_cloud_id": issue.get("assets_cloud_id", "") or "",
-        "asset_errors": error_text,
-        # Fresh category values supersede migration diagnostics. Current refresh
-        # failures are reported by asset_errors, including category failures.
-        "category_asset_errors": "",
         "Hauptkategorie": _asset_label(issue, "customfield_10680"),
         "Unterkategorie": _asset_label(issue, "customfield_10679"),
     }
