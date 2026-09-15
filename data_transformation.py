@@ -9,6 +9,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from jira import JIRA
 
+from asset_country import attach_country, load_cache
 from jira_loader import WORKSPACE_ID
 from resolution_bands import HOURS_PER_WORKING_DAY, classify_bands
 
@@ -346,6 +347,35 @@ def _asset_id(fields, field_name):
     return "" if value is None else str(value)
 
 
+def _escalation_asset_id(fields, field_name):
+    """objectId of a country-escalation field, but only from the normal workspace.
+
+    Country resolution keys its cache by objectId alone, so an objectId minted
+    in another Assets workspace would collide with a normal-workspace entry and
+    hand the ticket an unrelated site's country - and because Ansprechpartner
+    outranks Filiale, a foreign id can override a country that was correct.
+    jira_country_export._object_id_for_field() rejects the same references; this
+    keeps the dashboard path consistent with it.
+
+    A reference without a workspaceId at all is legacy raw data, not a
+    cross-workspace reference, so it is accepted - the same rule _asset_label()
+    applies to inputs that predate workspace tagging.
+    """
+    values = fields.get(field_name) or []
+    if not isinstance(values, list) or not values or not isinstance(values[0], dict):
+        return ""
+    workspace = values[0].get("workspaceId")
+    if workspace is not None and workspace != WORKSPACE_ID:
+        return ""
+    return _asset_id(fields, field_name)
+
+
+def _escalation_cell(fields, field_name):
+    """The stored 'ID_<objectId>' cell for an escalation field, or ''."""
+    object_id = _escalation_asset_id(fields, field_name)
+    return f"ID_{object_id}" if object_id else ""
+
+
 def _asset_label(issue, field_name):
     fields = issue.get("fields") or {}
     object_id = _asset_id(fields, field_name)
@@ -413,21 +443,9 @@ def _extract_issue(issue, comment_separator):
         "clone_types": clone_types,
         "cloned_by": cloned_by,
         "n_clones": n_clones,
-        "ansprechpartner": (
-            f"ID_{_asset_id(fields, 'customfield_10689')}"
-            if _asset_id(fields, "customfield_10689")
-            else ""
-        ),
-        "zentrale": (
-            f"ID_{_asset_id(fields, 'customfield_10673')}"
-            if _asset_id(fields, "customfield_10673")
-            else ""
-        ),
-        "filiale": (
-            f"ID_{_asset_id(fields, 'customfield_10674')}"
-            if _asset_id(fields, "customfield_10674")
-            else ""
-        ),
+        "ansprechpartner": _escalation_cell(fields, "customfield_10689"),
+        "zentrale": _escalation_cell(fields, "customfield_10673"),
+        "filiale": _escalation_cell(fields, "customfield_10674"),
         "Link": _nested(fields, "customfield_10010", "_links", "agent"),
         "clones_of_clones": clones_of_clones,
         "clone_types_of_clones": clone_types_of_clones,
@@ -457,6 +475,12 @@ def _load_service_desk_issues(
     df["ansprechpartner"] = df["ansprechpartner"].astype(str)
     df["zentrale"] = df["zentrale"].astype(str)
     df["filiale"] = df["filiale"].astype(str)
+    # Land alongside resolution_band, so a refreshed ticket is charted in the
+    # Länder tab instead of being dropped by its groupby as a NaN key. This is
+    # a pure cache lookup - no Assets API call, no credentials. Ids the cache
+    # has not seen become NOT_RESOLVED rather than silently claiming the asset
+    # carries no country; backfill_country.py resolves them.
+    df = attach_country(df, load_cache())
     df["firma"] = firma
     df["clone_in_project"] = df["clones"].apply(
         lambda value: (

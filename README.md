@@ -96,6 +96,33 @@ raw reference IDs, so they require no label migration. The command creates a
 changed during its API reads. Correct Assets permissions and rerun to recover
 labels previously marked unknown.
 
+## Country resolution (Länder tab)
+
+A ticket's country escalates Ansprechpartner → Filiale → Zentrale; the first
+asset carrying a `Land` attribute wins. Only asset references from the normal
+workspace are used — an objectId from another workspace is discarded rather
+than resolved, because the country cache is keyed by objectId alone and a
+foreign id would otherwise borrow an unrelated site's country.
+
+The cache lives in `data/asset_country.json` as `{object_id: country_or_null}`.
+A dashboard refresh fills `Land` from that cache without calling the Assets
+API, so refreshed tickets are charted immediately. Assets the cache has never
+seen become **`Land noch nicht ermittelt`** — distinct from `Kein Land am
+Asset`, which means the asset was fetched and genuinely carries no country.
+The Länder tab reports how many tickets are in that state.
+
+```sh
+# Resolve every asset the cache does not know yet, then write Land back
+uv run --no-sync python backfill_country.py --dry-run
+uv run --no-sync python backfill_country.py
+
+# Re-resolve ids cached as null by older versions, which stored a failed
+# lookup the same way as "this asset has no Land" and never retried it
+uv run --no-sync python backfill_country.py --retry-unknown
+```
+
+Writing over the input takes a `data/jira_data.pkl.bak-*` backup first.
+
 ## Storage and validation
 
 The dashboard reads `data/jira_data.pkl`. Backfills use key-based upserts with

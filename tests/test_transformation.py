@@ -89,6 +89,32 @@ class TransformationTests(unittest.TestCase):
                     self.assertEqual(row[rejected_column], "Unbekannt")
                     self.assertEqual(row[valid_column], "Normal category")
 
+    def test_rejected_escalation_reference_cannot_borrow_same_id_country(self):
+        """A foreign-workspace Ansprechpartner must not outrank a valid Filiale.
+
+        Country resolution keys its cache by objectId alone, so a sandbox
+        objectId that collides with a normal-workspace one would resolve to
+        that object's country - and since Ansprechpartner is checked first, it
+        would override a Filiale country that was correct.
+        """
+        for workspace in ("sandbox", jira_loader.WORKSPACE_ID, None):
+            with self.subTest(workspace=workspace):
+                raw = issue()
+                reference = {"objectId": "41"}
+                if workspace is not None:
+                    reference["workspaceId"] = workspace
+                raw["fields"]["customfield_10689"] = [reference]
+
+                row = self.transformation.load_issues_Euronet([raw]).iloc[0]
+
+                # A reference with no workspaceId at all is legacy raw data,
+                # not a cross-workspace reference, so it is still accepted.
+                expected = "" if workspace == "sandbox" else "ID_41"
+                self.assertEqual(row["ansprechpartner"], expected)
+                # The rejection must not take the valid links down with it.
+                self.assertEqual(row["filiale"], "ID_branch-1")
+                self.assertEqual(row["zentrale"], "ID_hq-1")
+
     def test_refresh_supersedes_migration_errors_only_for_refreshed_rows(self):
         import asset_migration
 

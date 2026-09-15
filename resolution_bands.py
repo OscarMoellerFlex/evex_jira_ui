@@ -1,9 +1,13 @@
 """Resolution-time bands for the Länder tab.
 
-Pure classification: business hours in, band label out. This lives outside
-data_transformation.py on purpose - that module builds a live JIRA client at
-import time, so anything defined there cannot be imported without credentials
-and therefore cannot be tested.
+Pure classification: business hours in, band label out. It lives outside
+data_transformation.py so the labels, colours and thresholds can be imported
+by app.py and backfill_country.py without dragging in that module's Jira and
+Assets machinery.
+
+BAND_ORDER is the order the bands must be read in - it drives the stacking and
+legend order of the Länder chart, where the colours are a ramp and only mean
+anything in sequence.
 """
 
 import pandas as pd

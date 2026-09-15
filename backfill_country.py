@@ -23,6 +23,7 @@ from asset_country import (
     ESCALATION_COLUMNS,
     NO_ASSETS_LINKED,
     NO_COUNTRY_ON_ASSET,
+    NOT_RESOLVED,
     attach_country,
     load_cache,
     resolve_missing,
@@ -111,6 +112,16 @@ def main():
     parser.add_argument("--output", default=None, help="defaults to --input")
     parser.add_argument("--cache", default=CACHE_PATH)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--retry-unknown",
+        action="store_true",
+        help=(
+            "drop cached null entries before resolving. Caches written before "
+            "the strict resolver landed stored failed lookups as null, which "
+            "is indistinguishable from an asset that carries no Land and is "
+            "never retried; this clears them once."
+        ),
+    )
     args = parser.parse_args()
 
     output = args.output or args.input
@@ -129,6 +140,12 @@ def main():
     cache = load_cache(args.cache)
     print(f"Cache holds {len(cache)} assets")
 
+    if args.retry_unknown:
+        stale = [key for key, value in cache.items() if value is None]
+        for key in stale:
+            del cache[key]
+        print(f"  dropped {len(stale)} null entries; they will be re-resolved")
+
     cache, resolved, failed = resolve_missing(collect_object_ids(df), cache)
     print(f"Newly resolved: {resolved}    failed lookups: {failed}")
     if failed:
@@ -138,12 +155,18 @@ def main():
     df = add_resolution_band(df)
 
     counts = df["Land"].value_counts()
-    buckets = int(counts.get(NO_COUNTRY_ON_ASSET, 0)) + int(
-        counts.get(NO_ASSETS_LINKED, 0)
+    buckets = sum(
+        int(counts.get(label, 0))
+        for label in (NO_COUNTRY_ON_ASSET, NO_ASSETS_LINKED, NOT_RESOLVED)
     )
     print(f"  countries resolved  : {len(df) - buckets}")
     print(f"  {NO_COUNTRY_ON_ASSET} : {int(counts.get(NO_COUNTRY_ON_ASSET, 0))}")
     print(f"  {NO_ASSETS_LINKED}  : {int(counts.get(NO_ASSETS_LINKED, 0))}")
+    still_unresolved = int(counts.get(NOT_RESOLVED, 0))
+    if still_unresolved:
+        # resolve_missing() just ran over every id in the frame, so anything
+        # left here had its lookup fail in this run.
+        print(f"  ! {NOT_RESOLVED} : {still_unresolved} (failed lookups; rerun)")
 
     if BAND_COLUMN in df.columns:
         print(f"  {BAND_COLUMN} counts:")
@@ -161,7 +184,10 @@ def main():
         return
 
     save_cache(cache, args.cache)
-    if output == args.input:
+    # Same path test as write_pickle_atomically(), which routes the live cache
+    # through save_data(). Comparing raw strings here instead would let
+    # `--output ./data/jira_data.pkl` overwrite the cache with no backup.
+    if os.path.abspath(output) == os.path.abspath(args.input):
         backup = f"{args.input}.bak-{datetime.now():%Y%m%d-%H%M%S}"
         shutil.copy2(args.input, backup)
         print(f"Backup written to {backup}")

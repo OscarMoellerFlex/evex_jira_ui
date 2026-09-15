@@ -9,6 +9,7 @@ import plotly.graph_objects as go  # Required for adding the custom text layer
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder
 
+from asset_country import NOT_RESOLVED
 from data_loading import load_data, save_data
 from interactive import render_interactive
 from plotting import (
@@ -17,7 +18,7 @@ from plotting import (
     create_toggle_chart,
     generate_distinct_colors,
 )
-from resolution_bands import BAND_COLORS, BAND_NOT_DONE, BAND_UNDER_1H
+from resolution_bands import BAND_COLORS, BAND_NOT_DONE, BAND_ORDER, BAND_UNDER_1H
 from service_desks import COMPANY_LABELS, DESKS, filter_companies
 from source_sync import refresh_missing_sources
 from styles import CUSTOM_CSS
@@ -544,6 +545,24 @@ with tab_countries:
         )
         df_land = df if include_open else df[df["resolution_band"] != BAND_NOT_DONE]
 
+        # groupby() drops NaN keys, so a ticket whose Land was never resolved
+        # would disappear from the chart AND from every total without a trace -
+        # and the totals would still look complete. Label those rows instead,
+        # then say how many there are.
+        land = df_land["Land"].astype("object")
+        land = land.where(df_land["Land"].notna(), NOT_RESOLVED)
+        land = land.mask(land.astype(str).str.strip() == "", NOT_RESOLVED)
+        df_land = df_land.assign(Land=land)
+
+        pending = int((df_land["Land"] == NOT_RESOLVED).sum())
+        if pending:
+            st.warning(
+                f"{pending} von {len(df_land)} Tickets haben noch kein "
+                f"aufgelöstes Land und stehen als „{NOT_RESOLVED}“ in der "
+                "Grafik. Ein Refresh trägt nur bereits bekannte Assets ein - "
+                "für neue Assets `backfill_country.py` ausführen."
+            )
+
         if df_land.empty:
             st.info("Keine Tickets im gewählten Zeitraum.")
         else:
@@ -554,6 +573,7 @@ with tab_countries:
                 x_label="Land",
                 toggle_key="toggle_countries",
                 color_map=BAND_COLORS,
+                group_order=BAND_ORDER,
                 force_bottom_value=BAND_UNDER_1H,
                 sort_x_by_total=True,
                 allow_log=True,

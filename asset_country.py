@@ -18,6 +18,10 @@ CACHE_PATH = "data/asset_country.json"
 
 NO_COUNTRY_ON_ASSET = "Kein Land am Asset"
 NO_ASSETS_LINKED = "Keine Assets verknüpft"
+# The ticket links an asset the cache has never been asked about - typically a
+# ticket added by a dashboard refresh since the last backfill run. Distinct from
+# NO_COUNTRY_ON_ASSET, which means the asset was fetched and carries no Land.
+NOT_RESOLVED = "Land noch nicht ermittelt"
 NO_SOURCE = "—"
 
 # Escalation order; also the DataFrame columns holding the asset ids.
@@ -71,14 +75,11 @@ def resolve_missing(object_ids, cache, resolver=None, workers=4):
 
     A failed lookup (deleted or forbidden asset, API outage) is counted but
     NOT written to the cache - caching it as None would be indistinguishable
-    from an asset that genuinely carries no Land.
+    from an asset that genuinely carries no Land, and `object_id not in cache`
+    would then skip that id on every later run. This only holds because the
+    default resolver raises on failure; resolve_asset_country (which returns
+    None instead) must not be used here.
     """
-    if resolver is None:
-        # Lazy: jira_country_export pulls in jira_loader, which needs credentials.
-        from jira_country_export import resolve_asset_country
-
-        resolver = resolve_asset_country
-
     pending = sorted(
         {
             object_id
@@ -88,6 +89,14 @@ def resolve_missing(object_ids, cache, resolver=None, workers=4):
     )
     if not pending:
         return cache, 0, 0
+
+    if resolver is None:
+        # Lazy: jira_country_export pulls in jira_loader, which needs
+        # credentials, so importing it is deferred until an id actually needs
+        # fetching.
+        from jira_country_export import resolve_asset_country_strict
+
+        resolver = resolve_asset_country_strict
 
     def _safe(object_id):
         try:
@@ -108,10 +117,11 @@ def resolve_missing(object_ids, cache, resolver=None, workers=4):
 def classify_country(ansprechpartner, filiale, zentrale, cache):
     """Return (country, source) for one ticket.
 
-    country is a country name, NO_COUNTRY_ON_ASSET or NO_ASSETS_LINKED;
-    source names the field the country came from, or NO_SOURCE.
+    country is a country name, NO_COUNTRY_ON_ASSET, NO_ASSETS_LINKED or
+    NOT_RESOLVED; source names the field the country came from, or NO_SOURCE.
     """
     linked = False
+    unresolved = False
     for source, raw in zip(
         ESCALATION_COLUMNS, (ansprechpartner, filiale, zentrale), strict=True
     ):
@@ -119,11 +129,17 @@ def classify_country(ansprechpartner, filiale, zentrale, cache):
         if object_id is None:
             continue
         linked = True
-        country = cache.get(object_id)
+        if object_id not in cache:
+            # Never looked up, so we cannot claim the asset has no Land.
+            unresolved = True
+            continue
+        country = cache[object_id]
         if country:
             return country, source
     if not linked:
         return NO_ASSETS_LINKED, NO_SOURCE
+    if unresolved:
+        return NOT_RESOLVED, NO_SOURCE
     return NO_COUNTRY_ON_ASSET, NO_SOURCE
 
 

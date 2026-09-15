@@ -8,6 +8,7 @@ from asset_country import (
     NO_ASSETS_LINKED,
     NO_COUNTRY_ON_ASSET,
     NO_SOURCE,
+    NOT_RESOLVED,
     attach_country,
     classify_country,
     load_cache,
@@ -45,8 +46,23 @@ def test_assets_present_but_none_carry_land():
     )
 
 
-def test_unknown_id_is_an_asset_without_land():
-    assert classify_country("ID_999", "", "", CACHE) == (NO_COUNTRY_ON_ASSET, NO_SOURCE)
+def test_id_absent_from_cache_is_unresolved_not_land_less():
+    # "3" is cached as None: fetched, carries no Land.
+    assert classify_country("ID_3", "", "", CACHE) == (NO_COUNTRY_ON_ASSET, NO_SOURCE)
+    # "999" was never looked up, so we cannot claim anything about its Land.
+    assert classify_country("ID_999", "", "", CACHE) == (NOT_RESOLVED, NO_SOURCE)
+
+
+def test_a_resolved_country_outranks_an_unresolved_earlier_link():
+    # Ansprechpartner is unknown to the cache, but Filiale has a real answer;
+    # a real country always beats "we do not know yet".
+    assert classify_country("ID_999", "ID_1", "", CACHE) == ("Deutschland", "filiale")
+
+
+def test_unresolved_outranks_land_less_when_both_present():
+    # "3" carries no Land and "999" was never fetched - resolving "999" could
+    # still produce a country, so the ticket is not yet "Kein Land am Asset".
+    assert classify_country("ID_3", "ID_999", "", CACHE) == (NOT_RESOLVED, NO_SOURCE)
 
 
 def test_normalise_strips_prefix_and_detects_absence():
@@ -104,6 +120,40 @@ def test_resolver_failure_is_counted_not_cached():
     cache, resolved, failed = resolve_missing(["ID_7"], {}, resolver=boom)
     assert "7" not in cache  # a failed lookup must not look like "no Land"
     assert (resolved, failed) == (0, 1)
+
+
+def test_default_resolver_reports_failure_by_raising(monkeypatch):
+    """The not-cached guarantee above only holds if the default resolver raises.
+
+    resolve_asset_country() swallows fetch errors and returns None, which
+    resolve_missing() would cache as a real "no Land" answer and never retry.
+    """
+    import jira_country_export
+
+    def boom(object_id, cloud_id=None, workspace_id=None):
+        raise RuntimeError("403")
+
+    monkeypatch.setattr(jira_country_export, "_fetch_asset_with_retry", boom)
+
+    # No resolver= argument: this exercises the lazy default import.
+    cache, resolved, failed = resolve_missing(["ID_7"], {})
+    assert "7" not in cache
+    assert (resolved, failed) == (0, 1)
+
+
+def test_default_resolver_still_caches_a_genuine_absence(monkeypatch):
+    """An asset that fetches fine but has no Land is cached as None."""
+    import jira_country_export
+
+    monkeypatch.setattr(
+        jira_country_export,
+        "_fetch_asset_with_retry",
+        lambda object_id, cloud_id=None, workspace_id=None: {"attributes": []},
+    )
+
+    cache, resolved, failed = resolve_missing(["ID_8"], {})
+    assert cache == {"8": None}
+    assert (resolved, failed) == (1, 0)
 
 
 def test_cache_roundtrip(tmp_path):
