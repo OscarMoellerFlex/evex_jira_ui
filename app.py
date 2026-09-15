@@ -1,14 +1,15 @@
 import hmac
 import os
-from datetime import UTC, datetime, time, timedelta
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go  # Required for adding the custom text layer
-import pytz
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder
 
+from asset_country import NOT_RESOLVED, refresh_countries, save_cache
 from data_loading import load_data, save_data
 from interactive import render_interactive
 from plotting import (
@@ -17,6 +18,7 @@ from plotting import (
     create_toggle_chart,
     generate_distinct_colors,
 )
+from resolution_bands import BAND_COLORS, BAND_NOT_DONE, BAND_ORDER, BAND_UNDER_1H
 from service_desks import COMPANY_LABELS, DESKS, filter_companies
 from source_sync import refresh_missing_sources
 from styles import CUSTOM_CSS
@@ -79,9 +81,15 @@ except Exception:  # noqa: BLE001 - allow an unavailable legacy cache
     df = pd.DataFrame()
     df_old = pd.DataFrame()
 
-# Optional global filters in sidebar
-start_date = datetime.now(UTC) - timedelta(days=7)
-end_date = datetime.now(UTC)
+# The whole dashboard reports in Berlin local time: `created` is stored as
+# Europe/Berlin (data_transformation.TZ), and the service desk works Berlin hours.
+BERLIN = ZoneInfo("Europe/Berlin")
+
+# Optional global filters in sidebar.
+# `now` must be Berlin-local, not UTC: between 00:00 and 02:00 Berlin the UTC date
+# is still the previous day, which silently shifted the default window back a day.
+start_date = datetime.now(BERLIN) - timedelta(days=7)
+end_date = datetime.now(BERLIN)
 picked = st.sidebar.date_input("Zeitraum (erstellt)", value=(start_date, end_date))
 
 # While a range is being picked, Streamlit reruns after the FIRST click and
@@ -97,10 +105,10 @@ else:
     )
     st.sidebar.info("Bitte Enddatum wählen.")
 
-tz = pytz.UTC
-
-start_dt = tz.localize(datetime.combine(start_date, time.min))
-end_dt = tz.localize(datetime.combine(end_date, time.max))
+# The picked day must span 00:00-23:59:59 Berlin. Building these in UTC shifted the
+# window by 1-2h, so tickets created just after Berlin midnight fell outside it.
+start_dt = datetime.combine(start_date, time.min, tzinfo=BERLIN)
+end_dt = datetime.combine(end_date, time.max, tzinfo=BERLIN)
 
 # toggle to switch between week_string and created_string
 if st.sidebar.toggle("Auf Wochenbasis"):
@@ -162,15 +170,6 @@ st.sidebar.info(f"{len(df)} Tickets für die gewählten Firmen im Zeitraum.")
 if df.empty:
     st.info("Keine Daten für die gewählten Firmen im Zeitraum.")
     st.stop()
-asset_incomplete = pd.Series(False, index=df.index)
-for error_column in ("asset_errors", "category_asset_errors"):
-    if error_column in df.columns:
-        asset_incomplete |= df[error_column].fillna("").astype(str).str.strip().ne("")
-if asset_incomplete.any():
-    st.warning(
-        f"Assets-Daten bei {int(asset_incomplete.sum())} Tickets unvollständig. "
-        "Nicht verfügbare Kategorien erscheinen als Unbekannt; Details stehen in den Rohdaten."
-    )
 df_raw = df.copy()
 
 plot_height = 900
@@ -182,6 +181,7 @@ plot_width = 1500
     tab_subcategories,
     tab_sources,
     tab_ursprung,
+    tab_countries,
     tab_status,
     tab_cycle_time,
     tab_resolution_time,
@@ -196,6 +196,7 @@ plot_width = 1500
         "📊 Unterkategorien",
         "📊 Quellen",
         "📊 Ursprung",
+        "🌍 Länder",
         "📊 Offene Tickets nach Status",
         "⏱️ Ticketbearbeitungszeit",
         "📈 Erstlösequote",
@@ -524,6 +525,64 @@ with tab_ursprung:
 
 
 # -------------------------------
+# Tab – Länder
+# -------------------------------
+with tab_countries:
+    st.header("🌍 Aufteilung Länder")
+
+    missing = [c for c in ("Land", "resolution_band") if c not in df.columns]
+    if missing:
+        # An older pickle predates the country backfill; hint instead of crashing.
+        st.info(
+            f"Länderdaten fehlen (Spalten: {', '.join(missing)}). "
+            "Bitte `backfill_country.py` ausführen oder Daten aktualisieren."
+        )
+    else:
+        include_open = st.checkbox(
+            "Nicht abgeschlossene Tickets einblenden",
+            value=True,
+            key="land_include_open",
+        )
+        df_land = df if include_open else df[df["resolution_band"] != BAND_NOT_DONE]
+
+        # groupby() drops NaN keys, so a ticket whose Land was never resolved
+        # would disappear from the chart AND from every total without a trace -
+        # and the totals would still look complete. Label those rows instead,
+        # then say how many there are.
+        land = df_land["Land"].astype("object")
+        land = land.where(df_land["Land"].notna(), NOT_RESOLVED)
+        land = land.mask(land.astype(str).str.strip() == "", NOT_RESOLVED)
+        df_land = df_land.assign(Land=land)
+
+        pending = int((df_land["Land"] == NOT_RESOLVED).sum())
+        if pending:
+            st.warning(
+                f"{pending} von {len(df_land)} Tickets haben noch kein "
+                f"aufgelöstes Land und stehen als „{NOT_RESOLVED}“ in der "
+                "Grafik. Ein Refresh trägt nur bereits bekannte Assets ein - "
+                "für neue Assets `backfill_country.py` ausführen."
+            )
+
+        if df_land.empty:
+            st.info("Keine Tickets im gewählten Zeitraum.")
+        else:
+            create_toggle_chart(
+                df_land,
+                x_col="Land",
+                group_col="resolution_band",
+                x_label="Land",
+                toggle_key="toggle_countries",
+                color_map=BAND_COLORS,
+                group_order=BAND_ORDER,
+                force_bottom_value=BAND_UNDER_1H,
+                sort_x_by_total=True,
+                allow_log=True,
+                plot_height=plot_height,
+                plot_width=plot_width,
+            )
+
+
+# -------------------------------
 # Tab 4 – Status Breakdown
 # -------------------------------
 with tab_status:
@@ -658,10 +717,41 @@ with tab_interactive:
     if "source_sync_success" in st.session_state:
         sources_updated = st.session_state.pop("source_sync_success")
         st.success(f"{sources_updated} fehlende Ursprünge aus Jira übernommen.")
-    if st.button(
-        "🔄 Fehlenden Ursprung aktualisieren",
-        help="Prüft alle gespeicherten Tickets mit leerem Ursprung in Jira, unabhängig vom gewählten Zeitraum und der Firma.",
-    ):
+    if "country_sync_success" in st.session_state:
+        stats = st.session_state.pop("country_sync_success")
+        st.success(
+            f"Länder aktualisiert: {stats['resolved']} Assets neu aufgelöst, "
+            f"{stats['rows']} Tickets neu zugeordnet."
+        )
+        if stats["failed"]:
+            st.warning(
+                f"{stats['failed']} Asset-Abfragen fehlgeschlagen. Sie sind nicht "
+                "zwischengespeichert - erneut ausführen, um sie zu wiederholen."
+            )
+        if stats["pending"]:
+            st.warning(
+                f"{stats['pending']} Tickets bleiben „{NOT_RESOLVED}“ "
+                "(fehlgeschlagene Abfragen)."
+            )
+
+    col_sources, col_countries = st.columns(2)
+    with col_sources:
+        refresh_sources = st.button(
+            "🔄 Fehlenden Ursprung aktualisieren",
+            help="Prüft alle gespeicherten Tickets mit leerem Ursprung in Jira, unabhängig vom gewählten Zeitraum und der Firma.",
+        )
+    with col_countries:
+        refresh_countries_clicked = st.button(
+            "🌍 Länder aktualisieren",
+            help=(
+                "Löst alle noch unbekannten Assets über die Assets-API auf und "
+                "schreibt Land für ALLE gespeicherten Tickets neu - unabhängig "
+                "vom gewählten Zeitraum und der Firma. Nötig, wenn der Cache "
+                "einen anderen Datenbestand enthält als die gehosteten Daten."
+            ),
+        )
+
+    if refresh_sources:
         try:
             with st.spinner("Fehlende Ursprünge werden mit Jira abgeglichen …"):
                 cached_df, sources_updated = refresh_missing_sources(load_data())
@@ -669,6 +759,29 @@ with tab_interactive:
             st.session_state["source_sync_success"] = sources_updated
         except Exception as exc:  # noqa: BLE001 - report optional/isolated failures
             st.error(f"Ursprung-Abgleich fehlgeschlagen: {exc}")
+        else:
+            st.rerun()
+
+    if refresh_countries_clicked:
+        try:
+            # The whole cache, not the filtered view: a ticket outside the
+            # current window still needs its Land, and rewriting only the
+            # visible rows would leave the rest stale.
+            with st.spinner("Assets werden aufgelöst und Länder neu zugeordnet …"):
+                cached_df = load_data()
+                before = (
+                    cached_df["Land"]
+                    if "Land" in cached_df.columns
+                    else pd.Series(index=cached_df.index, dtype="object")
+                )
+                cached_df, cache, stats = refresh_countries(cached_df)
+                save_cache(cache)
+                save_data(cached_df)
+            stats["rows"] = int((cached_df["Land"] != before).sum())
+            stats["pending"] = int((cached_df["Land"] == NOT_RESOLVED).sum())
+            st.session_state["country_sync_success"] = stats
+        except Exception as exc:  # noqa: BLE001 - report optional/isolated failures
+            st.error(f"Länder-Abgleich fehlgeschlagen: {exc}")
         else:
             st.rerun()
 

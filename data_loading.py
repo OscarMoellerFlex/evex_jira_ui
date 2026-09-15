@@ -5,8 +5,29 @@ from pathlib import Path
 
 DATA_PATH = "data/jira_data.pkl"
 
+# Written by earlier versions of the loader and the category migration. They are
+# constant (cloud/workspace ids) or diagnostics that belong in the refresh log,
+# not per ticket, so they are dropped on the way in and out of the cache.
+OBSOLETE_COLUMNS = (
+    "assets_cloud_id",
+    "assets_workspace_id",
+    "asset_errors",
+    "category_assets_cloud_id",
+    "category_assets_workspace_id",
+    "category_asset_errors",
+)
+
+
+def drop_obsolete_columns(df):
+    """Return df without the obsolete asset bookkeeping columns."""
+    if df is None:
+        return df
+    present = [column for column in OBSOLETE_COLUMNS if column in df.columns]
+    return df.drop(columns=present) if present else df
+
 
 def save_data(df):
+    df = drop_obsolete_columns(df)
     path = Path(DATA_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -27,5 +48,5 @@ def load_data():
             # so it is not untrusted input. If the cache ever becomes something
             # a third party can supply, switch to a non-executable format
             # (e.g. parquet) instead of suppressing this.
-            return pickle.load(f)  # nosec B301
+            return drop_obsolete_columns(pickle.load(f))  # nosec B301
     return None

@@ -9,7 +9,9 @@ import pandas as pd
 from dotenv import load_dotenv
 from jira import JIRA
 
+from asset_country import attach_country, load_cache
 from jira_loader import WORKSPACE_ID
+from resolution_bands import HOURS_PER_WORKING_DAY, classify_bands
 
 load_dotenv(override=True)
 
@@ -50,6 +52,7 @@ def enrich_jira_time_metrics(
     subdiv: (
         str | None
     ) = None,  # e.g. "BE", "BY", "NW", ...; None = federal holidays only
+    hours_per_working_day: float = HOURS_PER_WORKING_DAY,
     bins: list[float] | None = None,
 ) -> pd.DataFrame:
     """
@@ -159,6 +162,13 @@ def enrich_jira_time_metrics(
             - pd.Timestamp.combine(pd.Timestamp.today().date(), business_start)
         ).total_seconds()
         / 3600.0
+    )
+
+    # ---------- resolution band (Länder tab) ----------
+    out["resolution_band"] = classify_bands(
+        out["time_to_resolution_biz_hours"],
+        out["is_done"],
+        hours_per_working_day=hours_per_working_day,
     )
 
     # ---------- bins on elapsed hours (real time) ----------
@@ -309,15 +319,12 @@ _ISSUE_COLUMNS = [
     "clone_types",
     "cloned_by",
     "n_clones",
+    "ansprechpartner",
     "zentrale",
     "filiale",
     "Link",
     "clones_of_clones",
     "clone_types_of_clones",
-    "assets_workspace_id",
-    "assets_cloud_id",
-    "asset_errors",
-    "category_asset_errors",
 ]
 
 
@@ -338,6 +345,35 @@ def _asset_id(fields, field_name):
         return ""
     value = values[0].get("objectId")
     return "" if value is None else str(value)
+
+
+def _escalation_asset_id(fields, field_name):
+    """objectId of a country-escalation field, but only from the normal workspace.
+
+    Country resolution keys its cache by objectId alone, so an objectId minted
+    in another Assets workspace would collide with a normal-workspace entry and
+    hand the ticket an unrelated site's country - and because Ansprechpartner
+    outranks Filiale, a foreign id can override a country that was correct.
+    jira_country_export._object_id_for_field() rejects the same references; this
+    keeps the dashboard path consistent with it.
+
+    A reference without a workspaceId at all is legacy raw data, not a
+    cross-workspace reference, so it is accepted - the same rule _asset_label()
+    applies to inputs that predate workspace tagging.
+    """
+    values = fields.get(field_name) or []
+    if not isinstance(values, list) or not values or not isinstance(values[0], dict):
+        return ""
+    workspace = values[0].get("workspaceId")
+    if workspace is not None and workspace != WORKSPACE_ID:
+        return ""
+    return _asset_id(fields, field_name)
+
+
+def _escalation_cell(fields, field_name):
+    """The stored 'ID_<objectId>' cell for an escalation field, or ''."""
+    object_id = _escalation_asset_id(fields, field_name)
+    return f"ID_{object_id}" if object_id else ""
 
 
 def _asset_label(issue, field_name):
@@ -376,12 +412,6 @@ def _extract_issue(issue, comment_separator):
         for comment in comments
         if isinstance(comment, dict)
     )
-    errors = issue.get("asset_errors") or []
-    if isinstance(errors, str):
-        error_text = errors
-    else:
-        error_text = "\n".join(str(error) for error in errors)
-
     main_id = _asset_id(fields, "customfield_10680")
     sub_id = _asset_id(fields, "customfield_10679")
     cloned_by = _nested(links[0], "inwardIssue", "key") if links else ""
@@ -413,25 +443,12 @@ def _extract_issue(issue, comment_separator):
         "clone_types": clone_types,
         "cloned_by": cloned_by,
         "n_clones": n_clones,
-        "zentrale": (
-            f"ID_{_asset_id(fields, 'customfield_10673')}"
-            if _asset_id(fields, "customfield_10673")
-            else ""
-        ),
-        "filiale": (
-            f"ID_{_asset_id(fields, 'customfield_10674')}"
-            if _asset_id(fields, "customfield_10674")
-            else ""
-        ),
+        "ansprechpartner": _escalation_cell(fields, "customfield_10689"),
+        "zentrale": _escalation_cell(fields, "customfield_10673"),
+        "filiale": _escalation_cell(fields, "customfield_10674"),
         "Link": _nested(fields, "customfield_10010", "_links", "agent"),
         "clones_of_clones": clones_of_clones,
         "clone_types_of_clones": clone_types_of_clones,
-        "assets_workspace_id": issue.get("assets_workspace_id", "") or "",
-        "assets_cloud_id": issue.get("assets_cloud_id", "") or "",
-        "asset_errors": error_text,
-        # Fresh category values supersede migration diagnostics. Current refresh
-        # failures are reported by asset_errors, including category failures.
-        "category_asset_errors": "",
         "Hauptkategorie": _asset_label(issue, "customfield_10680"),
         "Unterkategorie": _asset_label(issue, "customfield_10679"),
     }
@@ -454,9 +471,16 @@ def _load_service_desk_issues(
             df[column], errors="coerce", utc=True
         ).dt.tz_convert(TZ)
 
-    df = enrich_jira_time_metrics(df)
+    df = enrich_jira_time_metrics(df, subdiv="BW")
+    df["ansprechpartner"] = df["ansprechpartner"].astype(str)
     df["zentrale"] = df["zentrale"].astype(str)
     df["filiale"] = df["filiale"].astype(str)
+    # Land alongside resolution_band, so a refreshed ticket is charted in the
+    # Länder tab instead of being dropped by its groupby as a NaN key. This is
+    # a pure cache lookup - no Assets API call, no credentials. Ids the cache
+    # has not seen become NOT_RESOLVED rather than silently claiming the asset
+    # carries no country; backfill_country.py resolves them.
+    df = attach_country(df, load_cache())
     df["firma"] = firma
     df["clone_in_project"] = df["clones"].apply(
         lambda value: (

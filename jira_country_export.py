@@ -105,6 +105,25 @@ def resolve_asset_country(object_id: str, cloud_id=CLOUD_ID, workspace_id=WORKSP
     return None
 
 
+def resolve_asset_country_strict(
+    object_id: str, cloud_id=CLOUD_ID, workspace_id=WORKSPACE_ID
+):
+    """Like resolve_asset_country, but a failed fetch raises instead of None.
+
+    resolve_asset_country collapses "the fetch failed" and "the asset carries
+    no Land" into the same None. Callers that cache the answer -
+    asset_country.resolve_missing() - would otherwise persist a transient
+    failure as a real result and never retry that id, so they need the two
+    cases kept apart.
+    """
+    asset = _fetch_asset_with_retry(object_id, cloud_id, workspace_id)
+    for attr in COUNTRY_ATTRIBUTES:
+        value = get_asset_attribute(asset, attr)
+        if value:
+            return value
+    return None
+
+
 def _object_id_for_field(issue_fields: dict, field: str):
     """Return the (last) asset objectId referenced by a custom field, or None."""
     refs = issue_fields.get(field) or []
@@ -146,7 +165,7 @@ def load_issues(
             f"{start}..{end} (max {max_issues})"
         )
         return fetch_jira_issues(
-            start_dt, end_dt, max_issues=max_issues, project=project
+            start_dt, end_dt, max_issues=max_issues, project=project, save_path=None
         )
     if not os.path.exists(input_path):
         raise FileNotFoundError(

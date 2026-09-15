@@ -89,6 +89,32 @@ class TransformationTests(unittest.TestCase):
                     self.assertEqual(row[rejected_column], "Unbekannt")
                     self.assertEqual(row[valid_column], "Normal category")
 
+    def test_rejected_escalation_reference_cannot_borrow_same_id_country(self):
+        """A foreign-workspace Ansprechpartner must not outrank a valid Filiale.
+
+        Country resolution keys its cache by objectId alone, so a sandbox
+        objectId that collides with a normal-workspace one would resolve to
+        that object's country - and since Ansprechpartner is checked first, it
+        would override a Filiale country that was correct.
+        """
+        for workspace in ("sandbox", jira_loader.WORKSPACE_ID, None):
+            with self.subTest(workspace=workspace):
+                raw = issue()
+                reference = {"objectId": "41"}
+                if workspace is not None:
+                    reference["workspaceId"] = workspace
+                raw["fields"]["customfield_10689"] = [reference]
+
+                row = self.transformation.load_issues_Euronet([raw]).iloc[0]
+
+                # A reference with no workspaceId at all is legacy raw data,
+                # not a cross-workspace reference, so it is still accepted.
+                expected = "" if workspace == "sandbox" else "ID_41"
+                self.assertEqual(row["ansprechpartner"], expected)
+                # The rejection must not take the valid links down with it.
+                self.assertEqual(row["filiale"], "ID_branch-1")
+                self.assertEqual(row["zentrale"], "ID_hq-1")
+
     def test_refresh_supersedes_migration_errors_only_for_refreshed_rows(self):
         import asset_migration
 
@@ -119,11 +145,8 @@ class TransformationTests(unittest.TestCase):
                     result.loc["SDEU-1", "Hauptkategorie"],
                     "Unbekannt" if fails else "Recovered",
                 )
-                self.assertEqual(result.loc["SDEU-1", "category_asset_errors"], "")
-                self.assertEqual(bool(result.loc["SDEU-1", "asset_errors"]), fails)
-                self.assertIn(
-                    "PermissionError", result.loc["SDEU-2", "category_asset_errors"]
-                )
+                self.assertNotIn("asset_errors", result.columns)
+                self.assertNotIn("category_asset_errors", result.columns)
 
     @classmethod
     def setUpClass(cls):
@@ -169,9 +192,8 @@ class TransformationTests(unittest.TestCase):
         self.assertAlmostEqual(row["time_to_resolution_h"], 4.0)
         self.assertFalse(bool(row["has_exax_clone"]))
         self.assertFalse(bool(row["has_axt_clone_clone"]))
-        self.assertEqual(row["assets_workspace_id"], "normal-workspace")
-        self.assertEqual(row["assets_cloud_id"], "cloud-1")
-        self.assertEqual(row["asset_errors"], "main-2: HTTP 403")
+        for column in ("assets_workspace_id", "assets_cloud_id", "asset_errors"):
+            self.assertNotIn(column, row.index)
 
     def test_normal_assets_marker_blocks_stale_static_fallback(self):
         """Catches unresolved normal IDs being mislabeled by the legacy map."""

@@ -32,7 +32,12 @@ code loads `.env` with override enabled. Never commit credentials or ticket cach
 
 Euronet uses the existing Amparex custom-field IDs and `Fertig` completion logic.
 It has no configured escalation targets. Generic issue links remain visible.
-Reporting retains Berlin time, weekdays 08:00–18:00, and German federal holidays.
+Reporting retains Berlin time and weekdays 08:00–18:00. Holidays are the German
+public holidays for **Baden-Württemberg** (`subdiv="BW"`), set once in
+`_load_service_desk_issues` and therefore shared by every desk, Euronet included.
+Beyond the federal holidays this adds Heilige Drei Könige, Fronleichnam and
+Allerheiligen; measured against the stored data it shifts business hours for
+about 2% of tickets and moves 12 across a reporting band.
 The current Erstlösequote view classifies same-calendar-day resolution.
 
 The earliest allowed Euronet creation date is **1 September 2026, 00:00 Berlin**.
@@ -90,6 +95,40 @@ raw reference IDs, so they require no label migration. The command creates a
 `data/jira_data.pkl.bak-assets-*` backup and refuses to overwrite a cache that
 changed during its API reads. Correct Assets permissions and rerun to recover
 labels previously marked unknown.
+
+## Country resolution (Länder tab)
+
+A ticket's country escalates Ansprechpartner → Filiale → Zentrale; the first
+asset carrying a `Land` attribute wins. Only asset references from the normal
+workspace are used — an objectId from another workspace is discarded rather
+than resolved, because the country cache is keyed by objectId alone and a
+foreign id would otherwise borrow an unrelated site's country.
+
+The cache lives in `data/asset_country.json` as `{object_id: country_or_null}`.
+A dashboard refresh fills `Land` from that cache without calling the Assets
+API, so refreshed tickets are charted immediately. Assets the cache has never
+seen become **`Land noch nicht ermittelt`** — distinct from `Kein Land am
+Asset`, which means the asset was fetched and genuinely carries no country.
+The Länder tab reports how many tickets are in that state.
+
+```sh
+# Resolve every asset the cache does not know yet, then write Land back
+uv run --no-sync python backfill_country.py --dry-run
+uv run --no-sync python backfill_country.py
+
+# Re-resolve ids cached as null by older versions, which stored a failed
+# lookup the same way as "this asset has no Land" and never retried it
+uv run --no-sync python backfill_country.py --retry-unknown
+```
+
+Writing over the input takes a `data/jira_data.pkl.bak-*` backup first.
+
+The **🌍 Länder aktualisieren** button on the _Interaktiv_ tab runs the same
+resolution against the whole stored cache — every ticket, regardless of the
+selected period and company — and is how a hosted instance whose data differs
+from the local cache brings its existing tickets up to date. It needs Assets
+credentials, and a cold cache means one API call per unknown asset, so the
+first run can take a while.
 
 ## Storage and validation
 

@@ -6,6 +6,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+MODE_ABS = "Absolute Zahlen"
+MODE_LOG = "Absolut (log)"
+MODE_REL = "Relativ (%)"
+
 
 def generate_distinct_colors(n):
     # evenly spaced hues in HSV space
@@ -91,9 +95,11 @@ def create_toggle_chart(
     toggle_key="default_key",
     color_map=None,
     force_bottom_value=None,
+    group_order=None,
     sort_x_by_total=False,
     plot_height=400,
     plot_width=None,
+    allow_log=False,
 ):
     """
     Generates a stacked bar chart with:
@@ -123,7 +129,15 @@ def create_toggle_chart(
 
     # 2. Ordering Logic
     # Group Order (Stack Order)
-    group_order = result[group_col].unique().tolist()
+    present = result[group_col].unique().tolist()
+    if group_order:
+        # Caller-supplied order (e.g. a colour ramp that only reads correctly
+        # in sequence). Without it the stack follows whatever order groupby
+        # happened to produce, which is alphabetical by label, not meaningful.
+        known = [value for value in group_order if value in present]
+        group_order = known + [value for value in present if value not in known]
+    else:
+        group_order = present
     if force_bottom_value and force_bottom_value in group_order:
         group_order.remove(force_bottom_value)
         group_order.insert(0, force_bottom_value)  # Insert at 0 to put at bottom
@@ -141,16 +155,17 @@ def create_toggle_chart(
     column_totals = result.groupby(x_col)[count_col].sum().reset_index()
 
     # 4. Streamlit Toggle
+    modes = [MODE_ABS, MODE_LOG, MODE_REL] if allow_log else [MODE_ABS, MODE_REL]
     mode = st.radio(
         "Ansicht wählen:",
-        ["Absolute Zahlen", "Relativ (%)"],
+        modes,
         horizontal=True,
         index=0,
         key=toggle_key,
     )
 
     # 5. Configure Variables based on Toggle
-    if mode == "Absolute Zahlen":
+    if mode in (MODE_ABS, MODE_LOG):
         y_val = count_col
         y_title = "Anzahl Tickets"
         y_format = None
@@ -204,7 +219,20 @@ def create_toggle_chart(
 
     # 9. Final Layout
     fig.update_xaxes(title_text=x_label if x_label else x_col)
-    fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
+    if mode == MODE_LOG:
+        # A log axis cannot start at 0, so the [0, y_max] range must not be set.
+        fig.update_yaxes(title_text=y_title, tickformat=y_format, type="log")
+        fig.add_annotation(
+            text="Log-Skala – Balkenanteile sind nicht proportional lesbar",
+            xref="paper",
+            yref="paper",
+            x=0,
+            y=1.06,
+            showarrow=False,
+            font=dict(size=12, color="#B00020"),
+        )
+    else:
+        fig.update_yaxes(title_text=y_title, tickformat=y_format, range=[0, y_max])
     # Plotly titles the legend with the color column's name; the swatches are
     # self-explanatory, so drop it.
     fig.update_layout(legend_title_text="")

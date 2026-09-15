@@ -40,7 +40,7 @@ class AssetMigrationTests(unittest.TestCase):
             all(w == "9926cb30-3f07-4fb2-9c83-aa4fc551c721" for _, w, _ in seen)
         )
         self.assertEqual(report["failed_objects"], 1)
-        self.assertIn("PermissionError", result.iloc[0]["category_asset_errors"])
+        self.assertNotIn("category_asset_errors", result.columns)
         self.assertEqual(len(frame.columns), 7)
 
     def test_wrong_returned_identity_is_not_used(self):

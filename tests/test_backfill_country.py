@@ -1,0 +1,128 @@
+"""Regression tests for backfill_country: banding, backups and dry runs."""
+
+import sys
+
+import pandas as pd
+import pytest
+
+import asset_country
+import backfill_country
+from backfill_country import BAND_COLUMN, add_resolution_band
+from resolution_bands import BAND_NOT_DONE, BAND_UNDER_1H
+
+
+@pytest.fixture
+def workspace(tmp_path, monkeypatch):
+    """A pickle plus cache on disk, with the Jira lookup stubbed out."""
+    source = tmp_path / "jira_data.pkl"
+    pd.DataFrame(
+        {
+            "key": ["A-1", "A-2"],
+            "ansprechpartner": ["ID_1", ""],
+            "filiale": ["", ""],
+            "zentrale": ["", ""],
+            "time_to_resolution_biz_hours": [0.5, 20.0],
+            "is_done": [True, True],
+        }
+    ).to_pickle(source)
+
+    cache = tmp_path / "asset_country.json"
+    cache.write_text('{"1": "Deutschland"}', encoding="utf-8")
+
+    # Never reach Jira: every id the frame carries is already cached.
+    monkeypatch.setattr(
+        asset_country, "resolve_missing", lambda ids, cache, **kw: (cache, 0, 0)
+    )
+    return source, cache
+
+
+def _run(monkeypatch, *argv):
+    monkeypatch.setattr(sys, "argv", ["backfill_country.py", *argv])
+    backfill_country.main()
+
+
+def test_backup_is_taken_when_output_is_the_input_spelled_differently(
+    workspace, monkeypatch
+):
+    """The backup guard must compare paths, not strings.
+
+    main() and write_pickle_atomically() both decide "is this the file we read
+    from?". If one compares raw strings and the other absolute paths, a spelling
+    like ./data/jira_data.pkl takes no backup yet still overwrites the file.
+    """
+    source, cache = workspace
+    aliased = f"{source.parent}/./{source.name}"
+
+    _run(
+        monkeypatch, "--input", str(source), "--output", aliased, "--cache", str(cache)
+    )
+
+    backups = list(source.parent.glob("*.bak-*"))
+    assert backups, "overwrote the input without taking a backup"
+
+
+def test_dry_run_writes_neither_pickle_nor_cache(workspace, monkeypatch):
+    source, cache = workspace
+    before_pickle = source.read_bytes()
+    before_cache = cache.read_text(encoding="utf-8")
+
+    _run(monkeypatch, "--input", str(source), "--cache", str(cache), "--dry-run")
+
+    assert source.read_bytes() == before_pickle
+    assert cache.read_text(encoding="utf-8") == before_cache
+    assert not list(source.parent.glob("*.bak-*"))
+
+
+def test_retry_unknown_drops_cached_nulls(workspace, monkeypatch):
+    """Legacy caches stored failed lookups as null; --retry-unknown clears them."""
+    source, cache = workspace
+    cache.write_text('{"1": "Deutschland", "9": null}', encoding="utf-8")
+    seen = {}
+
+    def spy(ids, current, **kw):
+        seen.update(current)
+        return current, 0, 0
+
+    monkeypatch.setattr(asset_country, "resolve_missing", spy)
+
+    _run(
+        monkeypatch,
+        "--input",
+        str(source),
+        "--cache",
+        str(cache),
+        "--dry-run",
+        "--retry-unknown",
+    )
+
+    assert "9" not in seen, "null entry survived --retry-unknown"
+    assert seen["1"] == "Deutschland", "resolved entries must be kept"
+
+
+def test_add_resolution_band_coerces_empty_strings_without_raising():
+    # app.py's upsert fills columns missing on either side with "" (app.py:147-152),
+    # so real data can hold a float/"" mix in an otherwise-numeric hours column.
+    # A naive `<=` comparison against "" raises TypeError - add_resolution_band
+    # must coerce before classifying, landing those rows in BAND_NOT_DONE.
+    df = pd.DataFrame(
+        {
+            "time_to_resolution_biz_hours": [0.5, "", 20.0],
+            "is_done": [True, True, True],
+        }
+    )
+
+    out = add_resolution_band(df)
+
+    assert list(out[BAND_COLUMN][:1]) == [BAND_UNDER_1H]
+    assert out[BAND_COLUMN][1] == BAND_NOT_DONE
+
+
+def test_add_resolution_band_warns_and_skips_when_column_missing(capsys):
+    df = pd.DataFrame({"is_done": [True]})
+
+    out = add_resolution_band(df)
+
+    assert BAND_COLUMN not in out.columns
+    captured = capsys.readouterr()
+    assert "time_to_resolution_biz_hours" in captured.out
+    assert "Länder tab" in captured.out
