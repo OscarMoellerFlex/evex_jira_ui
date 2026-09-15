@@ -32,7 +32,12 @@ code loads `.env` with override enabled. Never commit credentials or ticket cach
 
 Euronet uses the existing Amparex custom-field IDs and `Fertig` completion logic.
 It has no configured escalation targets. Generic issue links remain visible.
-Reporting retains Berlin time, weekdays 08:00–18:00, and German federal holidays.
+Reporting retains Berlin time and weekdays 08:00–18:00. Holidays are the German
+public holidays for **Baden-Württemberg** (`subdiv="BW"`), set once in
+`_load_service_desk_issues` and therefore shared by every desk, Euronet included.
+Beyond the federal holidays this adds Heilige Drei Könige, Fronleichnam and
+Allerheiligen; measured against the stored data it shifts business hours for
+about 2% of tickets and moves 12 across a reporting band.
 The current Erstlösequote view classifies same-calendar-day resolution.
 
 The earliest allowed Euronet creation date is **1 September 2026, 00:00 Berlin**.

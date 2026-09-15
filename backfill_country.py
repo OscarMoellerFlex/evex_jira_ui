@@ -10,8 +10,11 @@ Usage:
 """
 
 import argparse
+import os
 import shutil
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -25,6 +28,7 @@ from asset_country import (
     resolve_missing,
     save_cache,
 )
+from data_loading import DATA_PATH, save_data
 from resolution_bands import classify_bands
 
 DEFAULT_INPUT = "data/jira_data.pkl"
@@ -55,12 +59,41 @@ def add_resolution_band(df):
         return df
 
     out = df.copy()
-    # app.py's upsert fills columns missing on either side with "" (see
-    # app.py:147-152), so a slice of otherwise-numeric hours can hold empty
-    # strings. Coerce to NaN rather than letting classify_bands see a str.
+    # This otherwise-numeric column can hold empty strings in the stored frame:
+    # older refresh code filled columns missing on one side of the upsert with ""
+    # instead of NaN, and those rows are still in the cache. The current
+    # upsert_jira_data() reindexes, which fills NaN, so new rows are clean.
+    # Coerce either way rather than letting classify_bands compare str to float.
     hours = pd.to_numeric(out[HOURS_COLUMN], errors="coerce")
     out[BAND_COLUMN] = classify_bands(hours, out[DONE_COLUMN])
     return out
+
+
+def write_pickle_atomically(df, path):
+    """Write df to path so an interrupted run cannot leave a truncated pickle.
+
+    The dashboard cache is read by data_loading.load_data() with a plain open(),
+    so a half-written file is indistinguishable from a good one. data_loading's
+    save_data() already writes atomically and drops the obsolete bookkeeping
+    columns on the way out, so route the default cache through it verbatim rather
+    than reimplementing either behaviour. A custom --output gets the same
+    tempfile-then-replace treatment, minus the cache-specific column pruning.
+    """
+    if os.path.abspath(path) == os.path.abspath(DATA_PATH):
+        save_data(df)
+        return
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    os.close(handle)
+    try:
+        df.to_pickle(temporary)
+        os.replace(temporary, target)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+        raise
 
 
 def collect_object_ids(df):
@@ -132,7 +165,7 @@ def main():
         backup = f"{args.input}.bak-{datetime.now():%Y%m%d-%H%M%S}"
         shutil.copy2(args.input, backup)
         print(f"Backup written to {backup}")
-    df.to_pickle(output)
+    write_pickle_atomically(df, output)
     print(f"Wrote {len(df)} tickets to {output}")
 
 
