@@ -123,6 +123,13 @@ uv run --no-sync python backfill_country.py --retry-unknown
 
 Writing over the input takes a `data/jira_data.pkl.bak-*` backup first.
 
+The **🌍 Länder aktualisieren** button on the _Interaktiv_ tab runs the same
+resolution against the whole stored cache — every ticket, regardless of the
+selected period and company — and is how a hosted instance whose data differs
+from the local cache brings its existing tickets up to date. It needs Assets
+credentials, and a cold cache means one API call per unknown asset, so the
+first run can take a while.
+
 ## Storage and validation
 
 The dashboard reads `data/jira_data.pkl`. Backfills use key-based upserts with

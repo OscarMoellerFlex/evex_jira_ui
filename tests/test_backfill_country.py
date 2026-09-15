@@ -5,6 +5,7 @@ import sys
 import pandas as pd
 import pytest
 
+import asset_country
 import backfill_country
 from backfill_country import BAND_COLUMN, add_resolution_band
 from resolution_bands import BAND_NOT_DONE, BAND_UNDER_1H
@@ -30,7 +31,7 @@ def workspace(tmp_path, monkeypatch):
 
     # Never reach Jira: every id the frame carries is already cached.
     monkeypatch.setattr(
-        backfill_country, "resolve_missing", lambda ids, cache, **kw: (cache, 0, 0)
+        asset_country, "resolve_missing", lambda ids, cache, **kw: (cache, 0, 0)
     )
     return source, cache
 
@@ -82,7 +83,7 @@ def test_retry_unknown_drops_cached_nulls(workspace, monkeypatch):
         seen.update(current)
         return current, 0, 0
 
-    monkeypatch.setattr(backfill_country, "resolve_missing", spy)
+    monkeypatch.setattr(asset_country, "resolve_missing", spy)
 
     _run(
         monkeypatch,

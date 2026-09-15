@@ -24,9 +24,8 @@ from asset_country import (
     NO_ASSETS_LINKED,
     NO_COUNTRY_ON_ASSET,
     NOT_RESOLVED,
-    attach_country,
     load_cache,
-    resolve_missing,
+    refresh_countries,
     save_cache,
 )
 from data_loading import DATA_PATH, save_data
@@ -97,15 +96,6 @@ def write_pickle_atomically(df, path):
         raise
 
 
-def collect_object_ids(df):
-    """Every asset cell from the escalation columns present in the frame."""
-    values = []
-    for column in ESCALATION_COLUMNS:
-        if column in df.columns:
-            values.extend(df[column].tolist())
-    return values
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default=DEFAULT_INPUT)
@@ -137,21 +127,17 @@ def main():
             "asset is one of these cannot be told apart from tickets with no asset."
         )
 
-    cache = load_cache(args.cache)
-    print(f"Cache holds {len(cache)} assets")
+    print(f"Cache holds {len(load_cache(args.cache))} assets")
 
-    if args.retry_unknown:
-        stale = [key for key, value in cache.items() if value is None]
-        for key in stale:
-            del cache[key]
-        print(f"  dropped {len(stale)} null entries; they will be re-resolved")
-
-    cache, resolved, failed = resolve_missing(collect_object_ids(df), cache)
-    print(f"Newly resolved: {resolved}    failed lookups: {failed}")
-    if failed:
+    df, cache, stats = refresh_countries(
+        df, cache_path=args.cache, retry_unknown=args.retry_unknown
+    )
+    if stats["dropped"]:
+        print(f"  dropped {stats['dropped']} null entries; they were re-resolved")
+    print(f"Newly resolved: {stats['resolved']}    failed lookups: {stats['failed']}")
+    if stats["failed"]:
         print("  ! failed lookups are NOT cached; rerun to retry them")
 
-    df = attach_country(df, cache)
     df = add_resolution_band(df)
 
     counts = df["Land"].value_counts()

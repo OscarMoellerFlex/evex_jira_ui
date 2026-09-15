@@ -143,6 +143,45 @@ def classify_country(ansprechpartner, filiale, zentrale, cache):
     return NO_COUNTRY_ON_ASSET, NO_SOURCE
 
 
+def collect_object_ids(df):
+    """Every asset cell from the escalation columns present in the frame."""
+    values = []
+    for column in ESCALATION_COLUMNS:
+        if column in df.columns:
+            values.extend(df[column].tolist())
+    return values
+
+
+def refresh_countries(
+    df, cache_path=CACHE_PATH, retry_unknown=False, resolver=None, workers=4
+):
+    """Resolve unknown asset ids, then rewrite Land/land_quelle on every row.
+
+    Returns (df, cache, stats). The cache is NOT written - the caller decides,
+    so backfill_country's --dry-run can inspect the outcome without persisting
+    it. Both the CLI and the dashboard's Länder button go through here, so the
+    two cannot drift apart.
+
+    retry_unknown drops entries cached as None first. Those are ambiguous in
+    caches written before the strict resolver landed: a failed lookup and an
+    asset that genuinely carries no Land were stored identically, and
+    resolve_missing() skips any id already present.
+    """
+    cache = load_cache(cache_path)
+    dropped = 0
+    if retry_unknown:
+        stale = [key for key, value in cache.items() if value is None]
+        for key in stale:
+            del cache[key]
+        dropped = len(stale)
+
+    cache, resolved, failed = resolve_missing(
+        collect_object_ids(df), cache, resolver=resolver, workers=workers
+    )
+    stats = {"dropped": dropped, "resolved": resolved, "failed": failed}
+    return attach_country(df, cache), cache, stats
+
+
 def attach_country(df, cache):
     """Return a copy of df with 'Land' and 'land_quelle' columns added."""
     out = df.copy()

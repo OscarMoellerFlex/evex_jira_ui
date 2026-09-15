@@ -9,7 +9,7 @@ import plotly.graph_objects as go  # Required for adding the custom text layer
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder
 
-from asset_country import NOT_RESOLVED
+from asset_country import NOT_RESOLVED, refresh_countries, save_cache
 from data_loading import load_data, save_data
 from interactive import render_interactive
 from plotting import (
@@ -717,10 +717,41 @@ with tab_interactive:
     if "source_sync_success" in st.session_state:
         sources_updated = st.session_state.pop("source_sync_success")
         st.success(f"{sources_updated} fehlende Ursprünge aus Jira übernommen.")
-    if st.button(
-        "🔄 Fehlenden Ursprung aktualisieren",
-        help="Prüft alle gespeicherten Tickets mit leerem Ursprung in Jira, unabhängig vom gewählten Zeitraum und der Firma.",
-    ):
+    if "country_sync_success" in st.session_state:
+        stats = st.session_state.pop("country_sync_success")
+        st.success(
+            f"Länder aktualisiert: {stats['resolved']} Assets neu aufgelöst, "
+            f"{stats['rows']} Tickets neu zugeordnet."
+        )
+        if stats["failed"]:
+            st.warning(
+                f"{stats['failed']} Asset-Abfragen fehlgeschlagen. Sie sind nicht "
+                "zwischengespeichert - erneut ausführen, um sie zu wiederholen."
+            )
+        if stats["pending"]:
+            st.warning(
+                f"{stats['pending']} Tickets bleiben „{NOT_RESOLVED}“ "
+                "(fehlgeschlagene Abfragen)."
+            )
+
+    col_sources, col_countries = st.columns(2)
+    with col_sources:
+        refresh_sources = st.button(
+            "🔄 Fehlenden Ursprung aktualisieren",
+            help="Prüft alle gespeicherten Tickets mit leerem Ursprung in Jira, unabhängig vom gewählten Zeitraum und der Firma.",
+        )
+    with col_countries:
+        refresh_countries_clicked = st.button(
+            "🌍 Länder aktualisieren",
+            help=(
+                "Löst alle noch unbekannten Assets über die Assets-API auf und "
+                "schreibt Land für ALLE gespeicherten Tickets neu - unabhängig "
+                "vom gewählten Zeitraum und der Firma. Nötig, wenn der Cache "
+                "einen anderen Datenbestand enthält als die gehosteten Daten."
+            ),
+        )
+
+    if refresh_sources:
         try:
             with st.spinner("Fehlende Ursprünge werden mit Jira abgeglichen …"):
                 cached_df, sources_updated = refresh_missing_sources(load_data())
@@ -728,6 +759,29 @@ with tab_interactive:
             st.session_state["source_sync_success"] = sources_updated
         except Exception as exc:  # noqa: BLE001 - report optional/isolated failures
             st.error(f"Ursprung-Abgleich fehlgeschlagen: {exc}")
+        else:
+            st.rerun()
+
+    if refresh_countries_clicked:
+        try:
+            # The whole cache, not the filtered view: a ticket outside the
+            # current window still needs its Land, and rewriting only the
+            # visible rows would leave the rest stale.
+            with st.spinner("Assets werden aufgelöst und Länder neu zugeordnet …"):
+                cached_df = load_data()
+                before = (
+                    cached_df["Land"]
+                    if "Land" in cached_df.columns
+                    else pd.Series(index=cached_df.index, dtype="object")
+                )
+                cached_df, cache, stats = refresh_countries(cached_df)
+                save_cache(cache)
+                save_data(cached_df)
+            stats["rows"] = int((cached_df["Land"] != before).sum())
+            stats["pending"] = int((cached_df["Land"] == NOT_RESOLVED).sum())
+            st.session_state["country_sync_success"] = stats
+        except Exception as exc:  # noqa: BLE001 - report optional/isolated failures
+            st.error(f"Länder-Abgleich fehlgeschlagen: {exc}")
         else:
             st.rerun()
 
