@@ -1,11 +1,11 @@
 import hmac
 import os
-from datetime import UTC, datetime, time, timedelta
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go  # Required for adding the custom text layer
-import pytz
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder
 
@@ -80,9 +80,15 @@ except Exception:  # noqa: BLE001 - allow an unavailable legacy cache
     df = pd.DataFrame()
     df_old = pd.DataFrame()
 
-# Optional global filters in sidebar
-start_date = datetime.now(UTC) - timedelta(days=7)
-end_date = datetime.now(UTC)
+# The whole dashboard reports in Berlin local time: `created` is stored as
+# Europe/Berlin (data_transformation.TZ), and the service desk works Berlin hours.
+BERLIN = ZoneInfo("Europe/Berlin")
+
+# Optional global filters in sidebar.
+# `now` must be Berlin-local, not UTC: between 00:00 and 02:00 Berlin the UTC date
+# is still the previous day, which silently shifted the default window back a day.
+start_date = datetime.now(BERLIN) - timedelta(days=7)
+end_date = datetime.now(BERLIN)
 picked = st.sidebar.date_input("Zeitraum (erstellt)", value=(start_date, end_date))
 
 # While a range is being picked, Streamlit reruns after the FIRST click and
@@ -98,12 +104,10 @@ else:
     )
     st.sidebar.info("Bitte Enddatum wählen.")
 
-# `created` is Europe/Berlin (data_transformation.TZ), so the picked day must
-# start at 00:00 Berlin - building these in UTC shifted the window by 1-2h.
-tz = pytz.timezone("Europe/Berlin")
-
-start_dt = tz.localize(datetime.combine(start_date, time.min))
-end_dt = tz.localize(datetime.combine(end_date, time.max))
+# The picked day must span 00:00-23:59:59 Berlin. Building these in UTC shifted the
+# window by 1-2h, so tickets created just after Berlin midnight fell outside it.
+start_dt = datetime.combine(start_date, time.min, tzinfo=BERLIN)
+end_dt = datetime.combine(end_date, time.max, tzinfo=BERLIN)
 
 # toggle to switch between week_string and created_string
 if st.sidebar.toggle("Auf Wochenbasis"):
