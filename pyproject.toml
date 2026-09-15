@@ -32,3 +32,9 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
+
+# The suite is also runnable as `python -m unittest discover -s tests`, which puts
+# both the repo root and tests/ on sys.path. Mirror that for pytest so the two
+# runners agree and tests/ needs no __init__.py.
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]

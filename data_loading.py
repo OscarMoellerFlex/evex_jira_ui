@@ -1,12 +1,23 @@
 import os
 import pickle  # nosec B403
+import tempfile
+from pathlib import Path
 
 DATA_PATH = "data/jira_data.pkl"
 
 
 def save_data(df):
-    with open(DATA_PATH, "wb") as f:
-        pickle.dump(df, f)
+    path = Path(DATA_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as f:
+            temporary = f.name
+            pickle.dump(df, f)
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def load_data():

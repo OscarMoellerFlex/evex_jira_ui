@@ -1,6 +1,6 @@
 import hmac
 import os
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 
 import pandas as pd
 import plotly.express as px
@@ -18,6 +18,7 @@ from plotting import (
     generate_distinct_colors,
 )
 from resolution_bands import BAND_COLORS, BAND_NOT_DONE, BAND_UNDER_1H
+from service_desks import COMPANY_LABELS, DESKS, filter_companies
 from source_sync import refresh_missing_sources
 from styles import CUSTOM_CSS
 
@@ -65,8 +66,9 @@ st.sidebar.header("\n\nJIRA Data Analysis")
 # require_password()
 
 st.sidebar.subheader("Data Controls")
-# add horizontal radio buttons to toggle between Ipro, Amparex and both
-firma = st.sidebar.radio("Firma", ["Ipro", "Amparex", "Beide"], horizontal=True)
+selected_companies = st.sidebar.multiselect(
+    "Firma", COMPANY_LABELS, default=COMPANY_LABELS
+)
 
 try:
     df_old = load_data()
@@ -74,13 +76,13 @@ try:
     # make sure column clone_in_project is there
     if "clone_in_project" not in df.columns:
         df["clone_in_project"] = "-"
-except Exception:
+except Exception:  # noqa: BLE001 - allow an unavailable legacy cache
     df = pd.DataFrame()
     df_old = pd.DataFrame()
 
 # Optional global filters in sidebar
-start_date = datetime.now(timezone.utc) - timedelta(days=7)
-end_date = datetime.now(timezone.utc)
+start_date = datetime.now(UTC) - timedelta(days=7)
+end_date = datetime.now(UTC)
 picked = st.sidebar.date_input("Zeitraum (erstellt)", value=(start_date, end_date))
 
 # While a range is being picked, Streamlit reruns after the FIRST click and
@@ -114,66 +116,64 @@ else:
 st.sidebar.write("JIRA Daten aktualisieren.")
 
 if st.sidebar.button("🔄 aktualisieren"):
-    # Reading the local cache does not require a live Jira connection.
-    from data_transformation import load_issues, load_issues_Amparex, upsert_jira_data
-    from jira_loader import fetch_jira_issues
+    from desk_sync import refresh_desks
 
-    st.sidebar.success("Fetch triggered!")
-    issues_ipro = fetch_jira_issues(
-        start_dt, end_dt, max_issues=100000, project="SDIPR", save_path=None
-    )
-    issues_amparex = fetch_jira_issues(
-        start_dt, end_dt, max_issues=100000, project="SDAX", save_path=None
-    )
-    if not issues_ipro and not issues_amparex:
-        # An empty result is usually a silent auth failure (Jira answers 401 with
-        # an empty page) or a window with no tickets - not a reason to crash in
-        # the transformation step.
-        st.sidebar.error(
-            f"Keine Tickets im Zeitraum {start_dt:%Y-%m-%d} bis {end_dt:%Y-%m-%d} "
-            "gefunden. Bitte Zeitraum prüfen und JIRA_PASSWORD in .env verifizieren."
-        )
-        st.stop()
-    else:
-        st.sidebar.success(
-            f"JIRA data fetched successfully! {len(issues_ipro)+len(issues_amparex)} tickets fetched."
-        )
-    df_new_ipro = load_issues(issues_ipro)
-    df_new_amparex = load_issues_Amparex(issues_amparex)
-    # st.sidebar.success(f"Data transformed successfully! New {len(df_new_ipro)} tickets loaded for Ipro and {len(df_new_amparex)} tickets loaded for Amparex.")
-    df_combined = pd.concat([df_new_ipro, df_new_amparex])
-    columns_new = df_combined.columns
-    columns_old = df_old.columns
-    columns_to_add = set(columns_new) - set(columns_old)
-    for column in columns_to_add:
-        df_old[column] = ""
-    for column in columns_old:
-        if column not in columns_new:
-            df_combined[column] = ""
-    df = upsert_jira_data(df_old, df_combined)
-    try:
-        df, sources_updated = refresh_missing_sources(df)
-        st.sidebar.success(f"{sources_updated} fehlende Ursprünge aus Jira übernommen.")
-    except Exception as exc:
-        st.sidebar.warning(f"Ursprung-Abgleich fehlgeschlagen: {exc}")
-    save_data(df)
-    st.sidebar.success(f"Data upserted successfully! Overall {len(df)} tickets loaded.")
+    with st.spinner("Jira-Tickets werden für alle Firmen aktualisiert …"):
+        result = refresh_desks(df_old, start_dt, end_dt)
+    df = result.frame
+    for desk in DESKS:
+        if desk.key in result.errors:
+            st.sidebar.error(
+                f"{desk.label}: Aktualisierung fehlgeschlagen: {result.errors[desk.key]}"
+            )
+        else:
+            st.sidebar.info(f"{desk.label}: {result.counts[desk.key]} Tickets geladen.")
+        failures = result.asset_failures.get(desk.key, 0)
+        if failures:
+            st.sidebar.warning(
+                f"{desk.label}: Assets-Daten bei {failures} Tickets unvollständig. Details in den Rohdaten."
+            )
+    if result.counts and not df.empty:
+        try:
+            df, sources_updated = refresh_missing_sources(df)
+            st.sidebar.info(
+                f"{sources_updated} fehlende Ursprünge aus Jira übernommen."
+            )
+        except Exception as exc:  # noqa: BLE001 - report optional/isolated failures
+            st.sidebar.warning(f"Ursprung-Abgleich fehlgeschlagen: {exc}")
+        save_data(df)
+        if not result.errors:
+            st.sidebar.success(
+                f"Aktualisierung abgeschlossen: {len(df)} Tickets gespeichert."
+            )
+        else:
+            st.sidebar.warning(
+                "Erfolgreiche Abrufe gespeichert; vorhandene Tickets fehlgeschlagener Firmen bleiben erhalten."
+            )
 
-if df is None:
-    st.warning("No JIRA data found — please refresh using sidebar.")
+if not selected_companies:
+    st.info("Bitte mindestens eine Firma auswählen.")
     st.stop()
-else:
-    # Filter dataframe by date range
-    df = df[(df["created"] >= start_dt) & (df["created"] <= end_dt)]
-    st.sidebar.success(f"Data filtered successfully! {len(df)} tickets loaded.")
+if df is None or df.empty:
+    st.info("Keine Jira-Daten vorhanden. Bitte über die Seitenleiste aktualisieren.")
+    st.stop()
 
-
-if firma == "Ipro":
-    df = df[df["firma"] == "IPRO"]
-elif firma == "Amparex":
-    df = df[df["firma"] == "Amparex"]
-else:
-    pass
+created = pd.to_datetime(df["created"], errors="coerce", utc=True)
+df = df.loc[(created >= start_dt) & (created <= end_dt)]
+df = filter_companies(df, selected_companies)
+st.sidebar.info(f"{len(df)} Tickets für die gewählten Firmen im Zeitraum.")
+if df.empty:
+    st.info("Keine Daten für die gewählten Firmen im Zeitraum.")
+    st.stop()
+asset_incomplete = pd.Series(False, index=df.index)
+for error_column in ("asset_errors", "category_asset_errors"):
+    if error_column in df.columns:
+        asset_incomplete |= df[error_column].fillna("").astype(str).str.strip().ne("")
+if asset_incomplete.any():
+    st.warning(
+        f"Assets-Daten bei {int(asset_incomplete.sum())} Tickets unvollständig. "
+        "Nicht verfügbare Kategorien erscheinen als Unbekannt; Details stehen in den Rohdaten."
+    )
 df_raw = df.copy()
 
 plot_height = 900
@@ -361,7 +361,7 @@ with tab_categories:
             text=text_content,
             mode="text",
             textposition="top center",
-            textfont=dict(size=14, color="black", weight="bold"),
+            textfont={"size": 14, "color": "black", "weight": "bold"},
             showlegend=False,
             hoverinfo="skip",
         )
@@ -481,7 +481,7 @@ with tab_sources:
             text=text_content,
             mode="text",
             textposition="top center",
-            textfont=dict(size=12, color="black", weight="bold"),
+            textfont={"size": 12, "color": "black", "weight": "bold"},
             showlegend=False,
             hoverinfo="skip",
         )
@@ -688,7 +688,7 @@ with tab_raw:
             "Link": st.column_config.LinkColumn(
                 "JIRA Link", display_text="Open in JIRA"
             )
-        },  #
+        },
         hide_index=True,
         height=plot_height,
     )
@@ -711,7 +711,7 @@ with tab_interactive:
                 cached_df, sources_updated = refresh_missing_sources(load_data())
                 save_data(cached_df)
             st.session_state["source_sync_success"] = sources_updated
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - report optional/isolated failures
             st.error(f"Ursprung-Abgleich fehlgeschlagen: {exc}")
         else:
             st.rerun()
